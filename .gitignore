@@ -1,0 +1,8 @@
+*.bin
+*.dmp
+__pycache__/
+build/
+captures/
+re/
+server/data/
+tools/FileNames.list
