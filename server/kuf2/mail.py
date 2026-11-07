@@ -1,5 +1,5 @@
-"""System mail (CommonSubMail, scene 0x1e; the POST NPC menu opens it; player mail and packages are refused in
-world.EMPTY_REPLIES). The server delivers mail with gold and up to five items (deliver()); the character keeps
+"""System mail (CommonSubMail, scene 0x1e; the POST NPC menu opens it; player mail is social.py's letters; packages
+are refused in world.EMPTY_REPLIES). The server delivers mail with gold and up to five items (deliver()); the character keeps
 c["mail"] = [{id, title, body, sent (Unix s), read, gold, gold_taken, items: [{code, count, taken}]}] and
 c["next_mail_id"] (ids stay small: the client passes them through a double). A mail is deleted 28 days after it was
 sent, what the client tells the player (textui 7509 "After 28 days, which is the expiration date, the mail will be

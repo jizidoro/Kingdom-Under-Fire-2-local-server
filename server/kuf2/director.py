@@ -38,6 +38,8 @@ trigger holds:
                                               in the finish state, status.execution; Grey Rock's troll)
   {"on": "broken", "prop": id}                the hero breaks that attackable prop (game's props_hit; a tuple: the
                                               first of them; Flamegrass's barricade into the shortcut)
+  {"on": "used", "prop": id}                  the hero finishes a cast on that prop (the client's 0x5096; a tuple: the first
+                                              of them; Grey Rock's Crystal Stones)
   {"on": "arrive", "force": n, "bound": b}    a troop of force n (a tuple: of any of them) is inside bound b, by the
                                               host's position reports (0x50b0, game.troop_sync; Flamegrass's orc
                                               column reaching the ambush)
@@ -53,7 +55,9 @@ the Fire wizard, both prompts up).
 A step with "repeat": True fires every time its trigger comes true again (an hp step: each time the hp crosses
 below). A step with "class": n is for a hero of that class only (createcharacter HeroId: 0 Gunslinger, 1 Ranger, 2
 Elementalist, 3 Spellsword, 4 Berserker): for any other it never fires and is never waited on (the prologue's class
-lessons, m50116; steps of different classes may share an id, the one that fires is the hero's). A step with "needs":
+lessons, m50116; steps of different classes may share an id, the one that fires is the hero's). A step with
+"difficulty": n (or a tuple) is likewise for a room entered on that difficulty only (0 Normal, 1 Hard, 2 Hell; Fort
+Valley's Ukuron and right wall, on the Hard tape alone, in forces the zone does not mark). A step with "needs":
 sid waits for step sid: its trigger coming first is remembered, and it fires right after
 sid does (Tower's story places: the replay's hero walked into the first one, 18020, during the start scene, and the
 table told the scouting lines and marched the escort in the middle of it; live 2026-09-28 23:52); a "cond" or
@@ -70,6 +74,13 @@ order:
   ("spawn", troop, ...)              bring these troops (TroopIDs) in now, one by one out of their held group
                                      (game.spawn_troops: the Archer camp's lesson brings its force's troops in turn)
   ("leave", troop)                   a troop leaves the battle (game.troop_leaves: Vert's escape)
+  ("march straight", force, bound)   as "march", in a straight line with no pathfinding (ActTroopMoveToAreaIgnoringPolyline):
+                                     for troops the navmesh gives no way out, like Grey Rock's caged wolves
+  ("march line", force, bound)       as "march", each troop to the bound's point nearest it (goal 1): a line keeps its width
+  ("march past", force, bound)       as "march", ignoring what it meets on the way (engage 0, order type 3): troops that would
+                                     stop for enemies they cannot reach, like New Hampton's wall-top shooters
+  ("march one", force, bound)        as "march straight", the first of the force still standing only (10345: one troop leaves the
+                                     melee for the archer)
   ("march", force, bound)            the force's troops (not the player's) run to the bound's centre and fight what
                                      they meet (ActTroopMoveToArea goal 0); a str is one troop's alias. The escort's
                                      marches (ESCORT, below) go to the bound's point nearest each troop (goal 1): the
@@ -209,6 +220,9 @@ ACT_MOVE_TO_AREA = 0xc3a0        # ActTroopMoveToArea (0x140b31a40 -> 0x140b2d4e
                                  # goal, engage, flag, mode 0..2): a move order to the area (0x1407e7240, a player's
                                  # order path); live 2026-09-28 Glen walked east on it. Kind 0 needs the troop enabled
                                  # and active (0x140709740: +0x94 bit 0x10, +0x7f4) and simulated here (+0x230)
+ACT_MOVE_STRAIGHT = 0xc3a2       # ActTroopMoveToAreaIgnoringPolyline (0x140b31c20 -> 0x140b9dc80): (kind, id, area, goal,
+                                 # mode): always to the centre; order bit 0x8 skips the navmesh, and the units follow
+                                 # (live 2026-11-05: pinned wolves walked out of their cages on it)
 MOVE_CENTRE = 0                  # goal 0 -> 0x140b9dc80 -> 0x140b9dce0: to the area's centre (area +0x30)
 MOVE_NEAREST = 1                 # goal 1 -> 0x140b9ec40 -> 0x140b9eca0: to the area's point nearest the troop
                                  # (0x140b93380, area vt+0x70), one troop radius further on
@@ -349,9 +363,21 @@ def _table(spot, name):
     return frozenset(mission(spot).get(name, ()))
 
 
+def late_allies(spot):
+    """The held allies that come with a step of the table, not with their group (scenes/m<spot>.py LATE_ALLIES: New Hampton's
+    reinforcements, F46600, with Glen's 5900), frozenset() without one."""
+    return _table(spot, "LATE_ALLIES")
+
+
 def held(spot):
     """The forces the mission's table brings in itself (scenes/m<spot>.py HOLD), frozenset() without one."""
     return _table(spot, "HOLD")
+
+
+def harmless(spot):
+    """The forces whose hits are for show (scenes/m<spot>.py HARMLESS): their records carry "harmless", no hit of theirs
+    lands; a troop of theirs the table hands the player (HAND) hits for real."""
+    return _table(spot, "HARMLESS")
 
 
 def escort(spot):
@@ -483,10 +509,10 @@ def cutscene(s, index, seconds, before=()):
         s.later(at - now, play)
 
 
-def march(s, who, area, goal=MOVE_NEAREST):
+def march(s, who, area, goal=MOVE_NEAREST, straight=False, engage=1, one=False):
     """Order a force's standing troops (or one troop, by alias) to area, as ActTroopMoveToArea: goal (MOVE_CENTRE /
     MOVE_NEAREST), engage 1, mode MOVE_MODE (the run); the player's own troops (game.mission_plan hand)
-    take their orders from him."""
+    take their orders from him. one: only the first of them still standing."""
     from . import game
     troops, down = s.data.get("zone_troops", {}), s.data.get("down", set())
     mine = set((s.data.get("plan") or {}).get("hand", ()))
@@ -495,8 +521,10 @@ def march(s, who, area, goal=MOVE_NEAREST):
     else:
         uids = [u for u, t in troops.items() if t.get("ForceNum") == who]
     uids = [uid for uid in uids if uid in troops and uid not in down and uid not in mine]
+    uids = uids[:1] if one else uids
     for uid in uids:
-        game.troop_order(s, uid, [ACT_MOVE_TO_AREA, 0, uid, area, goal, 1, 0, MOVE_MODE])
+        game.troop_order(s, uid, [ACT_MOVE_STRAIGHT, 0, uid, area, goal, MOVE_MODE] if straight
+                         else [ACT_MOVE_TO_AREA, 0, uid, area, goal, engage, 0, MOVE_MODE])
     log.info("director: mission %s: %s marches to area %s", s.data.get("spot"), who, area)
     net.journal("march", spot=s.data.get("spot"), who=who, area=area, goal=goal, troops=uids)
 
@@ -559,10 +587,12 @@ def run(s, action):
         b = bound(s.data["spot"], args[0])
         if b is not None and b.get("EventBoundID") is not None:
             game.send_actions(s, [ACT_DIRECTION_TO_AREA, b["EventBoundID"], POINT_S])
-    elif kind == "march":
+    elif kind in ("march", "march straight", "march line", "march past", "march one"):
         b = bound(s.data["spot"], args[1])
         if b is not None and b.get("EventBoundID") is not None:
-            march(s, args[0], b["EventBoundID"], MOVE_CENTRE)
+            march(s, args[0], b["EventBoundID"], MOVE_NEAREST if kind == "march line" else MOVE_CENTRE,
+                  straight=kind in ("march straight", "march one"), engage=0 if kind == "march past" else 1,
+                  one=kind == "march one")
     elif kind == "route":
         route(s, *args)
     elif kind == "leave":
@@ -869,7 +899,10 @@ def _run_live(s, action):
 
 
 def for_hero(s, st):
-    """Whether step st is this room's hero's: one with "class" only for a hero of that class, any other for all."""
+    """Whether step st is this room's: one with "class" only for a hero of that class, one with "difficulty" only in a
+    room entered on it, any other for all."""
+    if st.get("difficulty") is not None and not _one_of(st["difficulty"], s.data.get("difficulty", 0)):
+        return False
     if st.get("class") is None:
         return True
     from . import game
@@ -1066,6 +1099,15 @@ def on_broken(s, prop_id):
     if not any(st["on"] == "broken" for st in script(s.data.get("spot"))):     # (no director state in rooms
         return                                                                # without such a step)
     for i, st in _pending(s, "broken"):
+        if _one_of(st["prop"], prop_id):
+            fire(s, i, {"prop": prop_id})
+
+
+def on_used(s, prop_id):
+    """The hero finished a cast on a prop (game's prop_cast_done): its "used" steps."""
+    if not any(st["on"] == "used" for st in script(s.data.get("spot"))):       # (no director state in rooms
+        return                                                                # without such a step)
+    for i, st in _pending(s, "used"):
         if _one_of(st["prop"], prop_id):
             fire(s, i, {"prop": prop_id})
 

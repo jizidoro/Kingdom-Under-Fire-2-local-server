@@ -45,7 +45,14 @@ HAND_LATER = set(MOCK)
 # the lesson's enemies (F20009), the mock battle's (F30000 infantry and archers, F30010 support infantry, F30020 Bomber
 # Wings), its allied infantry F12000 and the player's three F12500: only the steps bring them (the proximity wake had
 # the archer's first move bring the whole lesson at once)
-HOLD = {20009, 30000, 30010, 30020, 12000, 12500}
+HOLD = {20009, 30000, 30010, 30020, 12000, 12500, 10013}   # 10013: 컷신용궁병 10113, the opening camera's archer (left
+# out below): the tape's field has the player's archer alone, and live 2026-11-06 it shot the target and the Wing down
+# The lesson's melee is staged, ours [I]: the allied infantry of F10014 hit for show. Tape 25:38-28:12: the four red troops
+# stand in it for 2:34, one still at half its bar at 27:45, and they fall to the archer's volleys (1,534-1,775 each, 11
+# for a troop's 18,350). Their row 123690 hits for real in the mock battle (14 troops down in 53 s, ours 48 s), so the
+# lost script held them here; at their full 700-1,000 a second the four fell in 37 s (live 2026-11-06), before the
+# player's first order. The archer is of the same force and hits for real (game: a handed troop is his).
+HARMLESS = {10014}
 PANEL = (30000, ((30010, (30090,)), (30020, (30050,))))
 
 STEPS = [
@@ -61,11 +68,13 @@ STEPS = [
     {"on": "hp", "troop": TARGET, "below": 99, "by": ARCHER, "id": "ranged", "do": [
         ("done", 30090), ("say", JAGER, 12413), ("panel", 30010, 30100), ("spawn", WING), ("say", JAGER, 12414),
         ("notice", 12088, 12089), ("say", JAGER, 20004)]},
-    # the Bomber Wing down (26:12 complete): what to avoid (26:14-26:42); the enemy infantry come at the archer with
-    # 12417 "Here come the enemy Infantrymen!" (26:28-26:38: the archer in melee); "Move to a place of safety" joins the
+    # the Bomber Wing down (26:12 complete): what to avoid (26:14-26:42); one enemy troop leaves the melee for the archer
+    # with 12417 "Here come the enemy Infantrymen!" (26:28-26:38: the archer in melee; at 26:37 three red banners stay at
+    # the river and one stands by the archer's ring; which one the tape does not name, ours the first still standing,
+    # past the melee: engage 0); "Move to a place of safety" joins the
     # panel with 12418 (frames every 4 s: absent at 26:32, there at 26:36; it came with 20005, 26:14)
     {"on": "down", "troop": WING, "needs": "ranged", "id": "wing", "do": [
-        ("done", 30100), ("say", JAGER, 20005), ("say", JAGER, 12416), ("march", 20009, "시작궁병가두기"),
+        ("done", 30100), ("say", JAGER, 20005), ("say", JAGER, 12416), ("march one", 20009, "시작궁병가두기"),
         ("say", JAGER, 12417), ("panel", 30010, 30110), ("say", JAGER, 12418), ("say", JAGER, 12419)]},
     # "Move them over there." (26:42): the player's order to move them (the right button), then "Good! Now that
     # they're far away" (26:50) and the second Bomber Wing with "Defeat all the enemies" (26:58)

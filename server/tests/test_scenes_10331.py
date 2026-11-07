@@ -15,6 +15,7 @@ TAB = (("Select_Mode_1", 1, 0x30), ("Select_TroopSlot1_Enter_1", 2, 0x35), ("Com
        ("Command_C_1", 1, 0x3a), ("Command_Z_1", 1, 0x38), ("Select_TroopSlot2_Enter_1", 0, 0x36),
        ("Select_TroopSlot1_Move_1", 0, 0x84), ("Select_TroopSlot3_Enter", 0, 0x37), ("Test1", 1, 0x15),
        ("TroopSkill_Short_Cut1", 1, 0x23), ("Select_AllTroop", 1, 0x33))
+LINE = "12100"                       # the mock battle's starting line
 
 
 def lesson(s, name, page, key):
@@ -49,8 +50,15 @@ def test_the_lessons_come_in_1_tabs_order_each_on_its_key():
     assert {uid for uid, _, line in lines_shown(s) if line == 511050} == {JAGER}
     assert {uid for uid, _, line in lines_shown(s) if line != 511050} == {SANCHEZ}
     assert panel(s)[1] == [500720]
-    b = director.bound(10331, "유저이동지역")
+    b = director.bound(10331, LINE)
     assert [a[1:] for a in acts(s, director.ACT_DIRECTION_TO_AREA)][-1] == [b["EventBoundID"], director.POINT_S]
+
+
+def test_the_place_the_troops_are_sent_to_is_one_they_can_reach():
+    # live 2026-11-06 10:53: 유저이동지역 (51624,41160), by Sanchez's seat, is ground the client refuses a troop three
+    # times over ("Cannot move to that area."); a troop stood at (50393,41105), inside the map's strip 12100
+    b = director.bound(10331, LINE)
+    assert game.inside_bound(b, 50393, 41105) and not game.inside_bound(b, 51624, 41160)
 
 
 def test_a_lesson_waits_for_its_own_key():
@@ -71,7 +79,7 @@ def test_the_mock_battle_comes_at_the_highlighted_place_and_the_camp_is_won_afte
     for name, page, key in TAB:
         lesson(s, name, page, key)
     run_pending(s)
-    b = director.bound(10331, "유저이동지역")
+    b = director.bound(10331, LINE)
     walk(s, b["BoundCenterX"], b["BoundCenterZ"])
     run_pending(s)
     assert said(s)[-2:] == [511070, 511071]

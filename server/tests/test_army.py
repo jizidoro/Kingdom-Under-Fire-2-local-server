@@ -267,6 +267,16 @@ def test_the_room_start_carries_the_deck_troops_the_spot_allows():
     assert start_records(s) == [(game.PLAYER_TEAM, game.MY_SLOT, 1, 1)] and len(troop_entries(s)) == 1
 
 
+def test_the_players_id_is_his_heros_troop_uid():
+    # the client finds a troop's hero as the troop whose uid is the troop's owner id (GetHeroTroop 0x140bac2b1, then
+    # IsHero; three more sites the same way): with the id apart from the hero's uid, no troop of the player has a hero
+    # and TAI_10020 never reaches TryFollowHero (Flamegrass live 2026-11-06, the deck troop left 36,000 units behind)
+    c, _ = army(1, 2202311)
+    _, s = entered(10235, c)
+    (_, player, _, _), = start_records(s)
+    assert troop_entries(s)[0]["leader"] and troop_entries(s)[0]["uid"] == player == game.MY_SLOT
+
+
 def test_deck_troops_enter_the_cell_fight_for_the_player_and_take_hits():
     c, ts = army(1, 2202311)
     _, s = entered(10235, c)
@@ -282,6 +292,7 @@ def test_deck_troops_enter_the_cell_fight_for_the_player_and_take_hits():
     # an enemy's hit on the archers lands on their units; their hit on it resolves from their record
     enemy = next(u for u, t in b.troops.items() if u >= 10000 and t.get("c") and t["c"]["team"] != 0
                  and t["c"]["branch"] != "PROP")               # not a building: those take nothing but siege (C5)
+    b.troops[enemy]["c"] = combat.np_combatant(135170)      # the room's first enemies fire for show (HARMLESS)
     before = sum(b.troops[2]["units"])
     combat.apply_hits(s, [(2, [0])], game.send_troop_hp, attacker=enemy, attack={"pr": 1.0, "ar": 1.0})
     assert sum(b.troops[2]["units"]) < before
@@ -353,6 +364,7 @@ def test_a_fallen_deck_troop_pays_the_death_ap_once():
     b = s.data["battle"]
     enemy = next(u for u, t in b.troops.items() if u >= 10000 and t.get("c") and t["c"]["team"] != 0
                  and t["c"]["branch"] != "PROP")               # not a building: those take nothing but siege (C5)
+    b.troops[enemy]["c"] = combat.np_combatant(135170)      # the room's first enemies fire for show (HARMLESS)
     body = lambda: (hit_header(troop=enemy) + struct.pack("<H", 1) + enc_uid(1) + struct.pack("<H", 10)
                     + b"".join(bytes([0, 0, 0, 0, k + 3, 0]) for k in range(10)) + struct.pack("<H", 0))
     for _ in range(2000):

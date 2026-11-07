@@ -59,7 +59,7 @@ def test_the_mock_battle_comes_when_the_lessons_enemies_are_all_down():
     down(s, *INFANTRY)                                  # (the test's clock runs every timer: the flank too, below)
     assert said(s)[said(s).index(542000):][:3] == [542000, 542020, 544040]
     assert (545060, 545061) in notices(s)
-    assert handed(s) == [TUTOR, *MOCK] and left(s) == [TUTOR]
+    assert handed(s) == [TUTOR, *MOCK] and set(left(s)) == {TUTOR}
     assert all(s.data["battle"].troops[u]["max"] == 36048 for u in MOCK)
     assert {23000, 13000} <= forces(s)
     assert panel(s)[1][-1] == 540112 and (540100, 540120) in panel(s)[0]

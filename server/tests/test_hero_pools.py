@@ -204,6 +204,19 @@ def test_a_level_up_in_a_room_heals_the_hero_to_the_new_max():
     assert t["max"] == 994 + 48 and t["hp"] == 994 + 48
 
 
+def test_a_level_up_at_full_hp_tells_the_hud_the_new_max():
+    """Live 2026-11-05 10:00:29: full at 3,011, the level's gain took the room's record to the new max, so nothing went out
+    and the HUD kept 3,018 of 3,358 until the next login."""
+    c = village_berserker()
+    room = Room(c, 994)
+    c["level"] = 7
+    room.sent.clear()
+    game.room_level_up(room, c)
+    t = room.data["battle"].troops[0]
+    assert t["hp"] == t["max"] == 994 + 48
+    assert game.S2C_TROOP_HP in [w.proto for w in room.sent]
+
+
 # --- the bag a new hero is made with ---------------------------------------------------------------------------------
 # herotable %Inventory INVENTORY01 is a Level-up Celebration Chest [Lv 5] of the class (600000101 GLEN, 201 ISABELLA,
 # 301 REGNIER, 401 OLIVIA, 501 DRUID; Helena's rows are all -1). Part 1 18:30 (tiouWoPSPks f_00556): the level-1

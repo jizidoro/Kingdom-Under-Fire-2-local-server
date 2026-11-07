@@ -31,6 +31,23 @@ ESCORT = {10000, 10001}          # Glen with his two troops, Thompson: they marc
 # The tank F20074 (20184, by the wolves' gate) first shows on the tape's minimap at 38:23.5, with the sorcerer's chain
 # of lines (2380 -> 2470); the hero passes 6,000 from it at 37:04.5, where our proximity wake would bring it in
 HOLD = {20074}
+# Won by the troll's force, not by the last hostile: the tape has "Eliminate the enemy (Complete)" on the panel with the
+# troll at 2 hp under the finisher (42:37) and 3130 at 42:38, no walk back through the fortress
+WIN = "table"
+CRYSTALS = tuple(range(11000, 11013))       # the Crystal Stones (type 481): any of them is the lesson "Use Interact"
+# The eleven prisons of the wolves: 20074-20079 of F20060 at the inner gate, 20080-20084 of F20061 around the sorcerer's
+# yard. The tape: a wolf behind closed bars to 38:11, the cage front down on "Release the Wolves!" (2360, frames
+# 38:12-38:17), a wolf outside at 38:21. A closed cage holds its wolves still (live 2026-11-05); the proximity rule opened
+# them with their force's wake, eight minutes early for F20060, 23 s for F20061 (Leg 5)
+CAGES = tuple(range(20074, 20085))
+HOLD_PROPS = set(CAGES)
+# Ours, with the client's own order: the cages' way out. An open cage does not free them: 12 of F20060's 18 units stand
+# where the client's pathfinder finds no route (live 2026-11-05), and a straight line needs none (ActTroopMoveToArea
+# IgnoringPolyline, ign.py: all 18 out, positions continuous). What the original's script did here is not known. The
+# bounds are the yards': 10249 south and 10052 north of the inner gate, 10056 the middle of the sorcerer's yard, which
+# F20061's five cages ring
+WAYS_OUT = (("20043", 10249), ("20044", 10249), ("20045", 10249), ("20046", 10249), ("20047", 10052), ("20048", 10052),
+            (20061, 10056))
 # The refinement against playthrough part 2 (2026-09-30, the harness report captures/harness/10234_report.md "differs"
 # rows): each step below says the tape time, what the frames or the minimap reads show, and which it came from
 # ("frames": py -m video_script sheet over the cached video; "reads": the harness's channels file
@@ -152,6 +169,9 @@ STEPS = [
     # "Kobolds are coming from the left flank!" (2130, 35:43): our wake of F20051 (앞마당 코볼트) at 35:38.5 on the
     # tape's path: as it was
     {"on": "wake", "force": 20051, "id": "left flank", "do": [("say", GLEN, 2130), ("say", 20022, 2140)]},
+    # the archers on the battlements open fire at 36:11, 33 s after the left flank's wake: at 123,500 they are out of the
+    # proximity rule's reach for a hero going straight to the inner gate (Leg 5: 04:26, on the way back; 2026-11-05: never)
+    {"on": "after", "step": "left flank", "s": 24, "do": [("wake", 20052)]},
     # the archers on the battlements (F20052) open fire at 36:11 (frames: their shots across the courtyard), Thompson's
     # "General! The Kobold archers on the battlements have got us pinned!" (2150, 36:12), Glen's 2160 (36:16), the
     # Troop skill notice (6026 / 6027, 36:19), an archer's taunt 2170 (36:24). Kept on their wake (35:52.5 on the tape's
@@ -186,8 +206,11 @@ STEPS = [
     # Commander 37:56-38:15 (frames), so if it is the sorcerer's hp, someone else hurt him; his fall fires these too.
     # 2370 is in the chain (frames 38:13-38:24 and the chat log: 2360, 2370, 2380); it was a later step at 25 %
     {"on": "hp", "troop": 20078, "below": 50, "do": [
-        ("say", 20078, 2360), ("say", THOMPSON, 2370), ("wake", 20061), ("say", GLEN, 2380), ("wake", 20074),
-        ("say", GLEN, 2470), ("say", GLEN, 2490), ("notice", 6028, 6029)]},
+        *(("open", cage) for cage in CAGES), ("say", 20078, 2360),
+        ("wake", 20061), *(("march straight", who, way) for who, way in WAYS_OUT), ("say", THOMPSON, 2370),
+        ("say", GLEN, 2380), ("wake", 20074),
+        # the left-behind wolves' leash holds them in their yard (live 2026-11-05: 20043-20046 stood, 8,000 from the hero)
+        ("say", GLEN, 2470), ("march", 20060, 10053), ("say", GLEN, 2490), ("notice", 6028, 6029)]},
     # the obstacles: "General, the path is blocked." (2400, 39:27), the hero into 10190 at 39:29.5 (reads), "These
     # obstacles are destructible." (2410, 39:31) with the barricade glowing: as it was
     {"on": "bound", "bound": 10190, "do": [("say", THOMPSON, 2400), ("say", GLEN, 2410)]},
@@ -196,9 +219,10 @@ STEPS = [
     # (10070's point, 39:37-39:46); into 10227 (39:41.5), "Crystal Stones, I bet." (2430, 39:42), the Interact notice
     # (6016 / 6017, 39:44). Was: 2420 at 10227
     {"on": "bound", "bound": 10065, "id": "ores", "do": [("highlight", 10070), ("say", THOMPSON, 2420)]},
-    {"on": "bound", "bound": 10227, "do": [
+    {"on": "bound", "bound": 10227, "id": "interact lesson", "do": [
         ("say", GLEN, 2430), ("notice", 6016, 6017), ("panel", 400, 420), ("say", THOMPSON, 2440), ("say", GLEN, 2450),
         ("say", GLEN, 2460)]},
+    {"on": "used", "prop": CRYSTALS, "needs": "interact lesson", "do": [("done", 420)]},
     {"on": "bound", "bound": 10070, "needs": "ores", "do": [("highlight", 10070, 0)]},
     # the troll's yard: the mine carts, the sorcerer 20081 and the Mountain Troll 20082 (force 20080)
     # 11_Kobold (16 s, 40:06-40:22) voices "Watch out!", the mine cart, "General! Mountain Troll!" (10330-10470), as the
@@ -226,6 +250,7 @@ STEPS = [
     # "Use Finishing Attack (Complete)" with the finishing attack (42:38), before "Eliminate the enemy" (42:40)
     {"on": "finish", "troop": 20082, "do": [("done", 430)]},
     {"on": "down", "troop": 20081, "do": [("say", 20081, 3160)]},
+    {"on": "down", "force": 20080, "do": [("win",)]},
     # "you won't die in this mission": Glen restores the hero (1000)
     {"on": "hp", "troop": "hero", "below": 15, "repeat": True, "do": [("say", GLEN, 1000), ("heal",)]},
     # the ending: Grayrock reclaimed, the Crystal Stones for Golden Hammer's Lunawing (19500-19550). 13 is

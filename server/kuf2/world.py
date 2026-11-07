@@ -2,8 +2,8 @@
 import math, random, socket, struct, time
 from copy import deepcopy
 
-from . import (coinshop, craft, cubicshop, daily, diary, hero, items, mail as mailbox, obf, quest, rules, settings,
-               serials, skills, status, summon, tables, titles, troops)
+from . import (coinshop, craft, cubicshop, daily, diary, events, guild, hero, items, mail as mailbox, market, obf, party,
+               quest, realm, rules, settings, serials, skills, social, status, summon, tables, titles, troops)
 from .net import Role, cause, journal, log
 from .packet import OBOOL_FALSE, OBOOL_TRUE, Writer
 
@@ -159,7 +159,9 @@ S2C_BAG_TAB = 0x10ce            # 0x140dd1570, one 3-byte read: u8, i16 result (
                                 # move the items itself, and clears its pending flag common+0x16e0 either way
 C2S_OPEN_GACHA = 0x10a4         # using a GACHA_ITEM (0x140dd8630; also the "open all" repeat 0x140dd96c0): u16 bag slot
 S2C_OPEN_GACHA = 0x10a5         # 0x140dd1130: i16; 0 -> u32 item code, u16 count (the gained notice; the bag must follow);
-                                # 0x447 bag full; any error stops "open all"
+                                # 0x6402 bag full (text 0x1c51, 7249 "Not enough inventory space."), 0x447 text 7623;
+                                # any error stops "open all"
+GACHA_BAG_FULL = 0x6402
 C2S_ATTACK_REFRESH = 0x10b7     # no payload; after skill-learn replies (0x3d86, 0x3d89, 0x10af)
 S2C_ATTACK_REFRESH = 0x10b8     # 0x140da28f0, one 18-byte read: obool leader, obool kind (stat 15 + kind: physical,
                                 # magical), u32 max, u64 uid, u32 min (tenths, as HERO_ATTACK_AT)
@@ -209,9 +211,8 @@ IDLE_OFF = 0xFFFF
 C2S_SOCIAL = 0x1246             # u32 player id, u16 action (0x140ef5300): the client already played it (0x140cbdb60,
                                 # 0x140db52d0); the reply 0x1247 is for the other players in town, and there are none
 C2S_CHAT = 0x1042               # u8 channel, cstr text (0x140ef3d70)
-S2C_CHAT = 0x1043               # 0x140dded00: u8 channel, 0x17-byte header (only a block-list check reads it), cstr
-                                # sender name, cstr text (reader 0x140e631e0) -> shown by 0x140ddc1e0 (channel 0xb as 4)
-CHAT_HEADER = 0x17
+S2C_CHAT = 0x1043               # 0x140dded00: u8 channel, cstr sender, cstr text (reader 0x1405dd070, no header) ->
+                                # shown by 0x140ddc1e0. Only our "Server" lines: a player's own line is not sent back
 FORCE_WIN_COMMANDS = ("!win", "/win", ".win")   # the owner's chat command: win the mission room now (force_win)
 QUEST_DONE_COMMANDS = ("!questdone", "/questdone", ".questdone")   # fill and hand in (force_quests)
 QUEST_COMMANDS = ("!quest", "/quest", ".quest") + QUEST_DONE_COMMANDS  # fill only: ready at the NPC
@@ -227,21 +228,14 @@ S2C_BARRACK_TROOP_LIST = 0x1343 # ProcessPacket_BarrackTroopList 0x140da13f0: u1
 # Requests the client makes on entering the city whose replies can be empty: request -> (reply, body). The body is
 # the smallest one the reply handler (Common state case, address) reads without error.
 EMPTY_REPLIES = {
-    0x1267: (0x1268, b"\0"),             # 0x1405993b0 (scene 0xf): u8 n, n * (5 bytes, cstr)
-    0x1265: (0x1266, b"\0"),             # 0x1405c0cd0 (scene 0x4a): u8 n, n * (0x11 bytes, cstr)
-    0x126a: (0x126b, b"\0"),             # 0x1405bd810 (scene 0x49): u8 n, n * (0x15 bytes, cstr, cstr)
+    # (the event, banner and package lists, the Diamond storage and shop paths: events.py)
     0x1078: (0x1079, b"\0\0"),          # 0x140675340: u16 n, n * 0xb
     0x112e: (0x112f, b"\0\0" + bytes(3)),  # 0x140676ca0: i16 result; 0 -> 3 bytes
     0x10e9: (0x10ea, b"\0\0\0\0"),     # 0x140d3bd40: i16 result; 0 -> reader 0x140d3c090: u16 n, n * 5
     0x1031: (0x1032, b""),               # channel list poll (every 10 s); 0x140e158c0 does not read the packet
     0x5346: (0x5347, bytes(2)),          # CommonSubFriend friend list 0x140deba70: u16 n, entries (0x140df3960)
     0x5344: (0x5345, bytes(2)),          # CommonSubFriend ban list 0x140debed0: u16 n
-    0x524d: (0x524e, bytes(1)),          # CommonSubMail list 0x140e05f80 (reader 0x1405bf140): u8 n, ...
-    0x5a4e: (0x5a4f, bytes(4)),          # CommonSubMail 0x140e069d0: i16 result, u8; 0 -> 0x140e08200: u8 n, ...
-    0x5240: (0x5241, bytes(3)),          # CommonSubMail::ReqRecvList 0x140e01100: u8 page, u16 total; 0 -> no list
     0x534c: (0x534d, bytes(2)),          # 0x140ded390 friends list: i16 n, n * entries (0x140df3b20) - none offline
-    0x545d: (0x545e, bytes(12)),         # 0x140737b60 party setting: i16 result 0 (non-zero shows an error text),
-                                         # 8-byte party block (0x140739850; party id 0 = no party), i16 members 0
     # Session, account, world map (specs/session_account_worldmap.md, 2026-09-27): single channel, and refusals
     # for what needs other players, the cash shop or Cubic; each body is what the handler reads.
     0x1016: (0x1017, bytes(2)),          # survey answer: i16 0 (under 2 bytes crashes)
@@ -254,55 +248,39 @@ EMPTY_REPLIES = {
     0x1064: (0x1065, bytes.fromhex("0604")),           # report a player: "This player is invalid."
     0x1076: (0x1077, bytes.fromhex("1964")),           # compound items (item_combine is empty in this build)
     0x107c: (0x107d, bytes.fromhex("1204")),           # other player info: "not logged in or does not exist"
-    0x108a: (0x108b, bytes(3)),          # cash storage page: u8 mode 0, u16 total 0 (the client asks pages 0..5)
-    0x108c: (0x108d, bytes.fromhex("01c4")),           # cash storage take: text 0x1c64
     0x10ca: (0x10cb, bytes(2)),          # world chat: i16 0, the client prints its own text
-    0x10cf: (0x10d0, bytes.fromhex("01c4")),           # cash shop purchase: text 0x1c64
-    0x10f7: (0x10f8, bytes(0x29)),       # realm-war status on world-map entry: one 41-byte read, zeros = no war
-    0x10fc: (0x10fd, bytes.fromhex("0100")),           # realm-war spot action / register: text 7268
-    0x10fe: (0x10ff, bytes.fromhex("0100")),
+    # (the realm war, the captures, the war rewards and the realm transfer: realm.py)
     # PvP, mail, friends, party (specs/pvp_mail_social.md): other players only. Each body is what its handler reads;
     # the room lists 0x3e41 / 0x3e64 pop a request queue, so they answer requests only; joins refuse quietly
     # (a text code leaves the join flag set).
     0x3e40: (0x3e41, bytes(6)),          # PvP room list: empty
-    0x3e42: (0x3e43, b""),               # create room: the handler reads nothing, clears its pending flag
     0x3e44: (0x3e45, bytes.fromhex("00009716971600")),   # join room (quiet)
-    0x3e53: (0x3e54, bytes.fromhex("2d1c")),   # move slot: "Can't proceed..."
-    0x3e5a: (0x3e5b, bytes.fromhex("0100")),   # ready
+    0x3e53: (0x3e54, bytes.fromhex("2d1c")),   # move slot: "Can't proceed..." (the AI room's seat is its spot's)
+    0x3e5a: (0x3e5b, bytes.fromhex("0100")),   # ready (the AI room is the client's own: the server holds none)
     0x3e5c: (0x3e5d, bytes(2)),          # leave room
-    0x3e5e: (0x3e5f, bytes.fromhex("0204")),   # PvP against AI: "You can not enter this room." (not built)
-    0x3e61: (0x3e65, bytes.fromhex("0100")),   # create PvP room: "You have failed to create a room."
     0x3e62: (0x3e45, bytes.fromhex("00009716971600")),   # join PvP room (quiet)
     0x3e63: (0x3e64, bytes(6)),          # PvP room list: empty
-    0x5242: (0x5243, bytes.fromhex("0100")),   # read player mail (none exist)
-    0x5244: (0x5245, bytes.fromhex("0604")),   # send mail: "This player is invalid."
-    0x5246: (0x5247, bytes.fromhex("2a64")),   # player mail delete / take gold / take item: none exist
-    0x5248: (0x5249, bytes.fromhex("2a64")),
-    0x524a: (0x524b, bytes.fromhex("2a64")),
-    0x524f: (0x5250, bytes(3)),          # sent mail: empty
-    0x5340: (0x5341, bytes.fromhex("0604")),   # add friend / block: "... not logged in or does not exist."
-    0x5349: (0x534a, bytes(2)),          # friend request answer, favourite, memo: nothing to change
-    0x534e: (0x534f, b""),
+    # Letters between the account's characters (0x5240-0x524f) and friend / block by name (0x5340) are social.py's;
+    # the answer to a friend request 0x5349 is silent there (nobody ever asks).
+    0x534e: (0x534f, b""),               # cancel a sent friend request, favourite, memo: nothing to change
     0x5351: (0x5352, bytes(2)),
     0x5353: (0x5354, bytes(2)),
     0x5442: (0x5443, bytes.fromhex("1204")),   # party invite by name: "This player is invalid."
     0x5445: (0x5446, bytes(2)),
-    0x5449: (0x544a, bytes.fromhex("0100")),
     0x5451: (0x5452, bytes(2)),
     0x5453: (0x5454, bytes.fromhex("1204")),   # join a party by name
     0x5455: (0x5456, b""),
     0x5458: (0x5459, bytes.fromhex("010000")),
     0x545a: (0x545b, b""),
-    0x545f: (0x5460, bytes.fromhex("1d34")),   # party board detail / delete / join: "The list does not exist."
-    0x5461: (0x5462, bytes.fromhex("1b34")),   # register on the board: "Only the Party leader can register."
-    0x5463: (0x5464, bytes.fromhex("1d34")),
+    # The party of one is party.py's: the board 0x545d, leave 0x5449, my notice 0x5461 / 0x5463, the party room
+    # 0x405b-0x4063, the loot rule 0x404e, the start 0x5472, the give-up 0x547b, the rift step 0x407b, matching 0x5474.
+    0x545f: (0x5460, bytes.fromhex("1d34")),   # another party's notice: detail / join: "The list does not exist."
     0x5465: (0x5466, bytes.fromhex("1d34")),
-    0x5472: (0x5473, bytes.fromhex("0204")),   # party mission start (solo start is 0x3f48)
-    0x5474: (0x5475, bytes.fromhex("0100")),   # party matching start / cancel
-    0x5476: (0x5477, bytes(2)),
-    0x547b: (0x547c, bytes.fromhex("2634")),   # give-up vote / answer (< 5 bytes crashes 0x547f)
-    0x547e: (0x547f, bytes.fromhex("0000000001")),
-    0x5740: (0x5741, bytes.fromhex("0100")),   # PvP matching
+    0x5476: (0x5477, bytes(2)),                # cancel matching
+    0x547e: (0x547f, bytes.fromhex("0000000001")),   # the give-up vote's answer (< 5 bytes crashes 0x547f)
+    0x5740: (0x5741, bytes.fromhex("0844")),   # PvP matching: 0x4408 "Cannot engage in PvP at the moment." (text
+                                         # 70003; 0x140622220), the spot list asked again; `0100` printed the literal
+                                         # "PvPMatchRequest UnKnown Error : 1" (the pvp builder's report, 2026-11-05)
     0x5742: (0x5743, bytes(2)),
     0x5748: (0x5749, bytes(1)),          # PvP spot list: empty
     0x5840: (0x5841, bytes.fromhex("2b04")),   # PvP records and rankings: empty / quiet
@@ -310,46 +288,17 @@ EMPTY_REPLIES = {
     0x584c: (0x584d, bytes.fromhex("2b04")),
     **{req: (req + 1, bytes(8)) for req in (0x5842, 0x5848, 0x584e)},
     **{req: (req + 1, bytes.fromhex("1204")) for req in (0x5844, 0x584a, 0x5850)},
-    0x15a8: (0x15a9, bytes([1, 1, 1])),  # auction follow-up (only after a list success): 3 x obool false
-    0x5a50: (0x5a51, bytes.fromhex("2a64")),   # packages: none exist
-    0x5a52: (0x5a53, bytes.fromhex("2a64")),
-    # Field, NPC, travel (specs/field_npc_travel.md): guild captures, PvP, cash goods, waiting rooms (party only),
-    # rift, war rewards and realm transfer need the live service or other players.
-    0x1260: (0x1261, bytes.fromhex("0100")),   # tower capture register
-    0x1262: (0x1263, bytes.fromhex("010000")),     # field capture list (the window stays empty)
-    0x1440: (0x1441, bytes.fromhex("0100")),   # PvP info at the unlock level
-    0x3751: (0x3752, bytes(6)),          # limited sale: none
-    0x3757: (0x3758, bytes.fromhex("4264")),   # cash buy
+    0x15a8: (0x15a9, bytes([1, 1, 1])),  # the auction tabs' "new" marks, all off: 3 x obool false (market.py)
+    # Field, NPC, travel (specs/field_npc_travel.md): PvP and what needs other players.
+    0x1440: (0x1441, bytes.fromhex("0100")),   # the PvP matching schedule at the unlock level: none (off season)
     0x3764: (0x3765, bytes.fromhex("051c")),   # friend invite (never 0)
-    0x3f49: (0x3f4a, bytes.fromhex("0a1c")),   # QuickStart: "There is no game available."
+    0x3f49: (0x3f4a, bytes.fromhex("0a1c")),   # QuickStart: text 7313 "No room has been created." (seen 2026-11-06)
     0x4045: (0x4046, bytes.fromhex("542c")),   # summon an NP item (not built; 0 needs 8 bytes and a known item)
     0x404a: (0x404b, bytes.fromhex("0100")),   # /Restart (0 would restart the room)
-    0x404e: (0x404f, bytes.fromhex("0100")),   # party loot rule
-    0x4059: (0x405a, bytes.fromhex("0100")),   # waiting rooms: party only; solo missions start with 0x3f48
-    0x405b: (0x405c, bytes.fromhex("071c")),
-    0x405d: (0x405e, bytes.fromhex("071c")),
-    0x405f: (0x4060, bytes.fromhex("071c")),
-    0x4061: (0x4062, bytes.fromhex("0100")),
-    0x4063: (0x4064, bytes.fromhex("0100")),
-    0x4076: (0x4077, bytes(1)),          # HUD timed list: empty
-    0x407b: (0x407c, bytes.fromhex("071c")),   # rift step
     0x5548: (0x5549, bytes.fromhex("0100")),   # share a quest
-    0x5a40: (0x5a41, bytes.fromhex("0100")),   # war reward claim / list (an empty 0x5a43 crashes: 2 bytes)
-    0x5a42: (0x5a43, bytes(2)),
-    0x5a46: (0x5a47, bytes.fromhex("0100")),   # realm transfer
-    # Realm war, exchange, cash store, trade, guild (specs/guild_trade_realm.md): other players or the live service.
-    0x1100: (0x1101, bytes.fromhex("0100")), # realm war (War Info map only): spot detail
-    0x1102: (0x1103, bytes.fromhex("01000000000000000000")), # spot occupation: no result code, 10 bytes (shorter crashes), 'unoccupied'
-    0x1104: (0x1105, bytes.fromhex("0100")),
-    0x1108: (0x1109, bytes.fromhex("0100")),
-    0x110a: (0x110b, bytes.fromhex("0100")),
-    0x1115: (0x1116, bytes.fromhex("0100")),
-    0x111a: (0x111b, bytes.fromhex("0100")),
-    0x111c: (0x111d, bytes.fromhex("0100")),
-    0x111e: (0x111f, bytes.fromhex("00000000")), # war state poll: stops polling (< 4 bytes crashes)
+    # Exchange, trade, guild (specs/guild_trade_realm.md): other players or the live service.
     0x1120: (0x1121, bytes.fromhex("0100")), # by-name player request (clears the pending name)
     0x1124: (0x1125, b""),                   # the handler reads nothing
-    0x112a: (0x112b, bytes.fromhex("3764")), # 'You failed to buy a cash item.'
     0x112c: (0x112d, bytes.fromhex("00000000")), # /escape check: go ahead (the cast, then 0x10b5); < 4 bytes crashes
     0x1130: (0x1131, bytes.fromhex("00000000000000000000000000")), # exchange (other players): empty price book (< 12 bytes crashes)
     0x1132: (0x1133, bytes.fromhex("00000000000000000000")), # recent trades: empty
@@ -360,8 +309,6 @@ EMPTY_REPLIES = {
     0x1140: (0x1141, bytes.fromhex("0100000000000000000000")), # collect (11 bytes: kind and id, unreachable)
     0x1142: (0x1143, bytes.fromhex("0100")),
     0x1144: (0x1145, bytes.fromhex("2664")), # 'You are low on cash.'
-    0x114f: (0x1150, bytes.fromhex("00")),   # status popup notice: none (an empty body crashes)
-    0x1155: (0x1156, bytes.fromhex("641c0000")), # cash shop tab: text 0x1c64 (< 4 bytes crashes)
     0x3c40: (0x3c41, bytes.fromhex("0964")), # trade: 'You can not trade with this user.'
     0x3c43: (0x3c44, bytes.fromhex("0964")),
     0x3c45: (0x3c46, bytes.fromhex("0000")), # cancel deal (the window's Close)
@@ -369,41 +316,9 @@ EMPTY_REPLIES = {
     0x3c4b: (0x3c4c, bytes.fromhex("0100")),
     0x3c4d: (0x3c4e, bytes.fromhex("0964")), # never 0x6408 (a resend loop)
     0x3c4f: (0x3c50, bytes.fromhex("000000000964")),
-    0x3d40: (0x3d41, bytes.fromhex("0554")), # guild: none ('0554'); the ranking, applicant and search windows get quiet empties
-    0x3d42: (0x3d43, bytes.fromhex("0554")),
-    0x3d44: (0x3d45, bytes.fromhex("0154")), # create: 'You don't have authorization to do this.'
-    0x3d46: (0x3d47, bytes.fromhex("0554")),
-    0x3d48: (0x3d49, bytes.fromhex("0554")), # invite by name (clears the pending invite)
-    0x3d4e: (0x3d4f, bytes.fromhex("0554")),
-    0x3d51: (0x3d52, bytes.fromhex("0554")),
-    0x3d53: (0x3d54, bytes.fromhex("0554")),
-    0x3d57: (0x3d58, bytes.fromhex("1554")), # ranking page / search: never 0 with an empty list (crash)
-    0x3d59: (0x3d5a, bytes.fromhex("1554")),
-    0x3d5d: (0x3d5e, bytes.fromhex("0554")),
-    0x3d5f: (0x3d60, bytes.fromhex("0554")),
-    0x3d62: (0x3d63, bytes.fromhex("1554")), # applicants (every guild-window open)
-    0x3d64: (0x3d65, bytes.fromhex("00000000")), # guild search: empty
-    0x3d66: (0x3d67, bytes.fromhex("015400000000")),
-    0x3d69: (0x3d6a, bytes.fromhex("1554")),
-    0x3d6b: (0x3d6c, bytes.fromhex("055400000000")),
-    0x3d6d: (0x3d6e, bytes.fromhex("055400000000")),
-    0x3d6f: (0x3d70, bytes.fromhex("015400000000")),
-    0x3d71: (0x3d72, bytes.fromhex("0554")),
-    0x3d73: (0x3d74, bytes.fromhex("0000000000000000000000000000000000000000000000000000")), # my guild points: none (every guild-window open)
-    0x3d76: (0x3d77, bytes.fromhex("0754")),
-    0x3d78: (0x3d79, bytes.fromhex("0554")),
-    0x3d7b: (0x3d7c, bytes.fromhex("0554")),
-    0x3d7d: (0x3d7e, bytes.fromhex("0554")),
-    0x3d82: (0x3d83, bytes.fromhex("1554")),
-    0x3d84: (0x3d85, bytes.fromhex("055400000000")),
-    0x3d87: (0x3d88, bytes.fromhex("055400000000")),
-    0x3d8c: (0x3d8d, bytes.fromhex("0554")),
-    0x3d91: (0x3d92, bytes.fromhex("0554")),
-    # Items and shops (specs/items_troops_skills.md): the auction needs other players, "Cannot connect to the
-    # auction server." (0x041b) closes its window (the coin-shop paid refresh 0x1552 is coinshop.py's);
-    # enlisting has no stock (every TroopSaleTable slot is "-"); officer / troop skill books have no data rows.
-    **{req: (req + 1, bytes.fromhex("1b04")) for req in (0x1590, 0x1595, 0x1597, 0x1599, 0x159b, 0x159d, 0x15a0,
-                                                          0x15a2, 0x15a4, 0x15a6)},
+    # Items and shops (specs/items_troops_skills.md): the auction is market.py's (the coin-shop paid refresh 0x1552
+    # is coinshop.py's); enlisting has no stock (every TroopSaleTable slot is "-"); officer / troop skill books have
+    # no data rows.
     0x1544: (0x1545, bytes.fromhex("0100")),
     0x174e: (0x174f, bytes.fromhex("112c")),
     0x175c: (0x175d, bytes.fromhex("112c")),
@@ -426,8 +341,11 @@ C2S_OPEN_CONTAINER = 0x1667     # CommonSubCargo (builder 0x1408a8700), 13 bytes
                                 # many open at once (planning/client/items_troops_skills.md 0x1667)
 S2C_OPEN_CONTAINER = 0x1668     # ContainerItemOpener::ProcessPacket_ResOpenContainerItem 0x1408a9960: i16 result; on 0
                                 # (reader 0x1408aa820) coded u40 gold, u16 n, n * 8 (coded u16 count, coded u32 item,
-                                # coded u16); 0x447 = bag full (text 0x1dc7), other codes assert
-BAG_FULL = 0x447
+                                # coded u16); 0x447 is the one refusal it names, other codes assert
+ITEM_LOCKED = 0x447             # text 0x1dc7 (7623) "The item has been temporarily processed as not tradeable/usable." (the
+                                # English text table; textsystem_mas.csv lacks it, so it was read as "bag full" until
+                                # 2026-11-07, when a full bag's dismantle showed this line). Kept where a handler names no
+                                # other refusal (0x1668, 0x166c); a full bag gets each handler's own code below
 C2S_TAKE_CONTAINER = 0x1669     # ContainerItemOpener, after the shown result (builder 0x1408a8fe0): the 0x1667 fields + 2
 S2C_TAKE_CONTAINER = 0x166a     # ProcessPacket_ResGainItem 0x1408aa2a0: i16; 0 -> "gained" notices for the shown items;
                                 # 0x411 / 0x2c0b / 0x6c26 are texts
@@ -503,12 +421,13 @@ S2C_OPEN_CHOICE = 0x166c        # 0x1408a9e00: i16; 0 -> coded u40 gold, u16 n (
                                 # item, coded u16 0)
 C2S_TAKE_CHOICE = 0x166d        # the pick (0x1408a9480), 13 bytes: u8 source, coded u64 serial, coded u16 index, coded u16 slot
 S2C_TAKE_CHOICE = 0x166e        # ProcessPacket_ResGainItem (as 0x166a): i16; 0x411 = bag full text
-CHOICE_BAG_FULL = 0x411
+GAIN_BAG_FULL = 0x411           # 0x166a / 0x166e: text 0x1c65 "You don't have enough space in the bag."
 C2S_DISMANTLE = 0x154a          # the bag's dismantle mode (CommonSubCargo 0x140dd81a0), 12 bytes: coded u16 slot, coded u16
                                 # count, coded u64 serial
 S2C_DISMANTLE = 0x154b          # 0x140dd0c10: i16; 0 -> u8 n, n * (coded u16 count, coded u32 item) shown as gained; the
                                 # client removes and adds nothing itself; 0x2c1f "Can not disassemble this item."
 DISMANTLE_NO = 0x2c1f
+DISMANTLE_BAG_FULL = 0x6403     # 0x154b: text 7249 "Not enough inventory space."
 C2S_ENCHANT = 0x1670            # CommonSubItemEnchant 'CompleteEnchant' (0x1405fd910), 16 bytes: u8 add-type (0 none, 1/2
                                 # Cubic stones), coded u16 slot (bag slot / equipment index), coded u32 material, coded u64
                                 # serial, u8 source (0 bag, 1 equipment); the client already checked material and gold
@@ -684,9 +603,21 @@ def make(state, port, game_host, game_port):
     craft.make(role, state)
     coinshop.make(role, state)
     cubicshop.make(role, state)                 # the cash shop's Cubic tab: 0x3755 / 0x1128
+    events.make(role, state)                    # the live service: event lists, boosts, edition packages, Diamond
+                                                # paths (its fixed replies are events.REPLIES)
+    guild.make(role, state)                     # the guild of one: 0x3d40-0x3d91 (guild.py); 0x3d4c stays ignored
+    realm.make(role, state)                     # the realm transfer 0x5a46 and the no-war answers (family 8)
+    market.make(role, state)                    # the auction house: 0x1590..0x15a6 and 0x1592
+    party.make(role, state)                     # the party of one: notice 0x5461, party room 0x405b-0x4063, start
+                                                # 0x5472 (planning/agents/reports/2026-11-05_contract-party.md)
+    from . import pvp, pvproom, raid
+    pvp.make(role, state)                       # PvP against AI: the local room's start 0x3e5e (pvp.py)
+    pvproom.make(role, state)                   # the waiting room of one: 0x3e42, 0x3e61, its seat, ready and leave
     summon.make(role, state)                    # the troop summon board: 0x110f / 0x1111, 0x1113
     skills.make(role, state)
     mailbox.make(role, state)
+    social.make(role, state)                    # letters 0x5240-0x524f, 0x5340 by name; after mail: it extends
+                                                # 0x525e / 0x5260
     troops.make(role, state)
     daily.make(role, state)
     titles.make(role, state)
@@ -891,6 +822,10 @@ def make(state, port, game_host, game_port):
 
     @role.on(C2S_LEAVE_TOWN)
     def leave_town(s, pkt):
+        town_to_worldmap(s)
+
+    def town_to_worldmap(s):
+        """Out of the town to the world map: 0x1242 clears the client's pending move, 0x107b is what changes its state."""
         c = s.data["char"]
         x, y, z = c.get("pos", START_POS)
         q, n = obf.pos_xz(x, z)
@@ -981,8 +916,11 @@ def make(state, port, game_host, game_port):
             if cost:
                 change_gold(c, -cost)
             send_field_entry(s, spot, group, leave_battle=in_battle_room(s))
+        elif kind == "WORLD" and not in_battle_room(s):
+            town_to_worldmap(s)                         # the town's own door (warp 22): 0x4049 is a battle-state packet
         elif kind in ("TOWN", "WORLD", "FIELD"):
-            c["spot"], c["pos"] = spot, list(start_point(spot, group) or TOWN_ENTRY.get(spot) or c.get("pos", START_POS))
+            if spot:                                    # warp rows 1, 2, 255, 10001 name no spot: the hero keeps his
+                c["spot"], c["pos"] = spot, list(start_point(spot, group) or TOWN_ENTRY.get(spot) or c.get("pos", START_POS))
             if cost:
                 change_gold(c, -cost)
             state.save()
@@ -1200,12 +1138,13 @@ def make(state, port, game_host, game_port):
     # specs/pvp_mail_social.md: world-map route cancelled 0x2740, room start 0x3e4b (no reply handler), unfriend
     # 0x5342, party kick 0x544e and entry flag 0x5478 (party only), an oversized-packet report 0x4f4f, package opened
     # 0x5a54, reconnect keys 0x5941 / 0x5943 (never armed).
-    role.ignore(0x2740, 0x3e4b, 0x5342, 0x544e, 0x5478, 0x4f4f, 0x5a54, 0x5941, 0x5943)
+    role.ignore(0x2740, 0x3e4b, 0x5342, 0x544e, 0x5478, 0x4f4f, 0x5941, 0x5943)   # (0x5a54 is events.package_opened)
     # specs/field_npc_travel.md: flag toggles and marks nothing reads back (0x1248, 0x124f, 0x1257, 0x4079), the PvP
     # status 0x1443, the cash-shop open 0x375b, developer bindings (0x3f40 ForceGameStart, 0x5551 force complete,
     # 0x5640 WarpRequest), builders without callers (0x3f42, 0x3f46, 0x3f4b), the ack 0x5643. The tutorial skip 0x5550
     # is quest.py's (planning/client/town_quest_npc.md Gap 3).
-    role.ignore(0x1248, 0x124f, 0x1257, 0x4079, 0x1443, 0x375b, 0x3f40, 0x5551, 0x3f42, 0x3f46, 0x3f4b, 0x5643)
+    role.ignore(0x1248, 0x124f, 0x1257, 0x4079, 0x1443, 0x375b, 0x3f40, 0x3f42, 0x3f46, 0x3f4b, 0x5643)
+    # (0x5551, RTS.SetQuestForceComplete of the cutscene scripts, is quest.force_complete: a marker quest finished)
 
     @role.on(C2S_LEAVE_NOTICE)
     def leave_notice(s, pkt):
@@ -1236,6 +1175,10 @@ def make(state, port, game_host, game_port):
 
     @role.on(C2S_CHAT)
     def chat(s, pkt):
+        """A line of the player's, read for the owner's commands only. Nothing goes back: the client prints its own
+        line and then sends it (0x140de132a, 0x140de35a8 -> 0x140ddc1e0), so an echo would double it, and 0x140ddc1e0
+        takes channel 0xb's idle emotes through the emote table, so an echo would print them as chat. Nobody else is
+        here to relay to."""
         channel, text = pkt.u8(), pkt.cstr()
         if text.strip().lower() in FORCE_WIN_COMMANDS:
             force_win(s, channel)
@@ -1243,8 +1186,6 @@ def make(state, port, game_host, game_port):
         words = text.strip().lower().split()
         if words and words[0] in QUEST_COMMANDS:
             force_quests(s, channel, words)
-            return
-        s.send(Writer(S2C_CHAT).u8(channel).raw(bytes(CHAT_HEADER)).cstr(s.data["char"]["name"]).cstr(text))
 
     def force_win(s, channel):
         """The owner's command (2026-09-28: "create a command to force completion of a mission when it have some
@@ -1262,7 +1203,7 @@ def make(state, port, game_host, game_port):
             game.mission_won(g, g.state)
             reply = f"mission {spot} completed by command"
             log.info("mission %d won by the owner's command", spot)
-        s.send(Writer(S2C_CHAT).u8(channel).raw(bytes(CHAT_HEADER)).cstr("Server").cstr(reply))
+        s.send(Writer(S2C_CHAT).u8(channel).cstr("Server").cstr(reply))
 
     def force_quests(s, channel, words):
         """The owner's quest commands (2026-09-28: "another one to complete the quests ... to at least do some e2e
@@ -1276,7 +1217,7 @@ def make(state, port, game_host, game_port):
         done = [qid for qid in filled if quest.hand_in(s, state, int(qid))] if words[0] in QUEST_DONE_COMMANDS else []
         reply = (f"quests handed in: {', '.join(done) or 'none'}" if words[0] in QUEST_DONE_COMMANDS
                  else f"quests ready to hand in: {', '.join(filled) or 'none (no active quest by that id)'}")
-        s.send(Writer(S2C_CHAT).u8(channel).raw(bytes(CHAT_HEADER)).cstr("Server").cstr(reply))
+        s.send(Writer(S2C_CHAT).u8(channel).cstr("Server").cstr(reply))
 
     @role.on(C2S_EQUIP)
     def equip(s, pkt):
@@ -1504,11 +1445,11 @@ def make(state, port, game_host, game_port):
         it = bag_item(c, serial)
         if it is None or items.container(it["code"]) is None:
             log.warning("container open refused: serial %#x (%s)", serial, it and it["code"])
-            s.send(Writer(S2C_OPEN_CONTAINER).u16(BAG_FULL))
+            s.send(Writer(S2C_OPEN_CONTAINER).u16(ITEM_LOCKED))
             return
         opened = max(1, min(want, it["count"]))     # the stack's count dialog: that many boxes, one merged result
         if item_use_refusal(c, it["code"], opened):
-            s.send(Writer(S2C_OPEN_CONTAINER).u16(BAG_FULL))
+            s.send(Writer(S2C_OPEN_CONTAINER).u16(ITEM_LOCKED))
             return
         gold, merged = 0, {}
         for _ in range(opened):
@@ -1518,8 +1459,11 @@ def make(state, port, game_host, game_port):
                 merged[code] = merged.get(code, 0) + k
         got = list(merged.items())
         if not fits(c, got, it["slot"] if it["count"] == opened else None):
+            # Ours: refused here with the one code 0x1668 names (0x447, the lock line), not left to the take's 0x411:
+            # after a refused take the client keeps the shown list and prints it as gained at the next successful
+            # take (live 2026-11-07: three grindstones "acquired" with a choice box's book, none given)
             log.info("container %d: no room for %s", it["code"], got)
-            s.send(Writer(S2C_OPEN_CONTAINER).u16(BAG_FULL))
+            s.send(Writer(S2C_OPEN_CONTAINER).u16(ITEM_LOCKED))
             return
         s.data["container"] = (serial, it["code"], gold, got, opened)     # shown now, given on 0x1669
         w = Writer(S2C_OPEN_CONTAINER).u16(0).raw(obf.u40(gold)).u16(len(got))
@@ -1536,13 +1480,15 @@ def make(state, port, game_host, game_port):
         serial = obf.dec_u64(b[0:8]) if len(b) >= 8 else None
         if pending is None or pending[0] != serial or (bag_item(c, serial) or {}).get("count", 0) < pending[4]:
             log.warning("container take without an open result: %s", b.hex())
-            s.send(Writer(S2C_TAKE_CONTAINER).u16(BAG_FULL))
+            s.send(Writer(S2C_TAKE_CONTAINER).u16(ITEM_LOCKED))
             return
         _, code, gold, got, opened = pending
         it = bag_item(c, serial)
-        if (it["code"] != code or item_use_refusal(c, code, opened)
-                or not fits(c, got, it["slot"] if it["count"] == opened else None)):
-            s.send(Writer(S2C_TAKE_CONTAINER).u16(BAG_FULL))
+        if it["code"] != code or item_use_refusal(c, code, opened):
+            s.send(Writer(S2C_TAKE_CONTAINER).u16(ITEM_LOCKED))
+            return
+        if not fits(c, got, it["slot"] if it["count"] == opened else None):
+            s.send(Writer(S2C_TAKE_CONTAINER).u16(GAIN_BAG_FULL))
             return
         take_serial(c, serial, opened)
         count_item_day(c, code, opened)
@@ -1702,12 +1648,14 @@ def make(state, port, game_host, game_port):
         cost = items.buy_price(code) * qty if code else 0
         if code is None or n < 1:
             log.warning("store buy refused: shop %d slot %d", shop, slot)
-            s.send(Writer(S2C_STORE_BUY).u16(BAG_FULL).u64(0).raw(obf.u40(c.get("gold", 0))))   # the handler reads 15
+            s.send(Writer(S2C_STORE_BUY).u16(ITEM_LOCKED).u64(guild.contribution(c)).raw(obf.u40(c.get("gold", 0))))   # the handler reads 15
             return                                                                              # bytes on every result
         money = int(items.row(code).get("MoneyType", "0")) if str(items.row(code).get("MoneyType", "")).isdigit() else 0
+        if money == guild.MONEY_CONTRIBUTION:            # the guild shop's goods cost the member's contribution
+            return guild.buy(s, state, shop, slot, code, qty, cost, dst)
         have = c.get("gold", 0) if money == 0 else sum(i["count"] for i in c.get("bag", []) if i["code"] == money)
         if have < cost:                                  # a token shop's goods cost their MoneyType token item
-            s.send(Writer(S2C_STORE_BUY).u16(NOT_ENOUGH_GOLD).u64(0).raw(obf.u40(c.get("gold", 0))))
+            s.send(Writer(S2C_STORE_BUY).u16(NOT_ENOUGH_GOLD).u64(guild.contribution(c)).raw(obf.u40(c.get("gold", 0))))
             return
         # Check the bag after payment: exhausting token stacks may free the space for the purchase.
         # No intermediate save may contain the reward without its payment (add_item saves the completed change).
@@ -1720,8 +1668,8 @@ def make(state, port, game_host, game_port):
         paid_by_serial = dict(payment)
         after = [dict(i, count=i["count"] - paid_by_serial.get(i["serial"], 0)) for i in c.get("bag", [])
                  if i["count"] > paid_by_serial.get(i["serial"], 0)]
-        if not fits(dict(c, bag=after), [(code, qty)]):
-            s.send(Writer(S2C_STORE_BUY).u16(BAG_FULL).u64(0).raw(obf.u40(c.get("gold", 0))))
+        if not fits(dict(c, bag=after), [(code, qty)]):      # 0x447 here would print 7623, "not tradeable/usable"
+            s.send(Writer(S2C_STORE_BUY).u16(guild.SHOP_BAG_FULL).u64(guild.contribution(c)).raw(obf.u40(c.get("gold", 0))))
             return
         before = {it["slot"]: deepcopy(it) for it in c.get("bag", [])}
         for serial, paid in payment:
@@ -1734,7 +1682,7 @@ def make(state, port, game_host, game_port):
         journal("item", ev="buy", code=code, name=items.name(code), n=qty, shop=shop, slot=slot, price=cost,
                 money=money or None)
         state.save()
-        s.send(Writer(S2C_STORE_BUY).u16(0).u64(0).raw(obf.u40(c["gold"])))
+        s.send(Writer(S2C_STORE_BUY).u16(0).u64(guild.contribution(c)).raw(obf.u40(c["gold"])))
         #1541 must see the old common gold:140dcbdb0 skips the open shop's
         # refresh when1656 has already installed the new total.
         after = {it["slot"]: it for it in c.get("bag", [])}
@@ -1784,8 +1732,8 @@ def make(state, port, game_host, game_port):
             it = next((i for i in (hero.equipment(c) if e[0] == 1 else c.get("bag", [])) if i["serial"] == serial), None)
             if it is not None and all(it is not x for x, _ in chosen):
                 chosen.append((it, e[0] == 1))
-        total = sum(items.repair_cost(it) for it, _ in chosen)
-        if c.get("gold", 0) < total:
+        total = guild.discounted(c, "Repair_Discount", sum(items.repair_cost(it) for it, _ in chosen))  # the guild's
+        if c.get("gold", 0) < total:                                           # skill, off the total (0x140e2af90)
             s.send(Writer(S2C_REPAIR).u16(NOT_ENOUGH_GOLD))
             return
         mended = any(worn and hero.broken(it) for it, worn in chosen)   # a broken worn piece counts again (G20)
@@ -2013,17 +1961,19 @@ def make(state, port, game_host, game_port):
             return
         bag = c["bag"]
         if not fits(c, got, it["slot"] if n == it["count"] else None):
-            s.send(Writer(S2C_DISMANTLE).u16(BAG_FULL))
+            s.send(Writer(S2C_DISMANTLE).u16(DISMANTLE_BAG_FULL))
             return
+        before = {i["slot"]: deepcopy(i) for i in bag}
         take_serial(c, serial, n)
         for code, k in got:
-            add_item(s, state, code, k)
+            add_item(s, state, code, k, refresh=False)
         state.save()
         w = Writer(S2C_DISMANTLE).u16(0).u8(len(got))
         for code, k in got:
             w.raw(obf.u16(k)).raw(obf.u32(code))
         s.send(w)
-        send_cargo(s)
+        after = {i["slot"]: i for i in c["bag"]}        # 0x1656 alone left the open bag drawing the item (live d8_dis2)
+        send_cargo(s, changed_slots=sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k)))
         log.info("dismantled %d x%d: %s", it["code"], n, got)
         titles.achieve(s, state, "ItemDismantle", add=n)
 
@@ -2043,10 +1993,11 @@ def make(state, port, game_host, game_port):
         rule = items.enchant_rule(it["code"], level) if it else None
         held = sum(i["count"] for i in c.get("bag", []) if i["code"] == material)
         cubic = items.enchant_add_cost(it["code"], level, add) if it and add else 0
+        gold = guild.discounted(c, "Enchant_Discount", rule["cost"]) if rule else 0    # the guild's skill (0x1405fa0f3)
         result = (ENCHANT_NOT_ALLOWED if rule is None or level >= rule["max"] else
                   ENCHANT_CASH if add and (not cubic or c.get("cubic", 0) < cubic) else
                   ENCHANT_MATERIAL if material != rule["material"] or held < rule["count"] else
-                  NOT_ENOUGH_GOLD if c.get("gold", 0) < rule["cost"] else 0)
+                  NOT_ENOUGH_GOLD if c.get("gold", 0) < gold else 0)
         if result:
             log.warning("enchant of %s refused: %#x", it and it["code"], result)
             s.send(Writer(S2C_ENCHANT).u16(result))
@@ -2063,7 +2014,7 @@ def make(state, port, game_host, game_port):
             x -= w
         if add == 2 and new < level:
             new, outcome = level, ENCHANT_STAY      # prevent-down: a failure that would drop the level keeps it (D1)
-        change_gold(c, -rule["cost"])
+        change_gold(c, -gold)
         it["enchant"] = new
         if new > level:
             titles.achieve(s, state, "ItemEnchantLv", add=1,
@@ -2074,7 +2025,7 @@ def make(state, port, game_host, game_port):
         s.send(Writer(S2C_ENCHANT).u16(0).u16(new).u8(outcome))
         quest.count(s, state, "AnyEnchant", "ID1", {"", "-"})
         log.info("enchant %d: %d -> %d (outcome %d, %d gold, add-type %d for %d Cubic)", it["code"], level, new,
-                 outcome, rule["cost"], add, cubic)
+                 outcome, gold, add, cubic)
 
     @role.on(C2S_ENCHANT_TRANSFER)
     def enchant_transfer(s, pkt):
@@ -2252,7 +2203,7 @@ def make(state, port, game_host, game_port):
         it = bag_item(c, serial)
         if it is None or items.choice_container(it["code"]) is None or item_use_refusal(c, it["code"]):
             log.warning("choice box refused: serial %s (%s)", serial, it and it["code"])
-            s.send(Writer(S2C_OPEN_CHOICE).u16(BAG_FULL))
+            s.send(Writer(S2C_OPEN_CHOICE).u16(ITEM_LOCKED))
             return
         gold, got = items.open_container(it["code"], random.randrange, items.choice_container)
         got = [(code, n) for code, n in got if n > 0][:255]
@@ -2268,20 +2219,20 @@ def make(state, port, game_host, game_port):
         pending = s.data.pop("choice", None)
         c = s.data["char"]
         if len(b) < 11 or pending is None or pending[0] != obf.dec_u64(b[1:9]) or bag_item(c, pending[0]) is None:
-            s.send(Writer(S2C_TAKE_CHOICE).u16(BAG_FULL))
+            s.send(Writer(S2C_TAKE_CHOICE).u16(ITEM_LOCKED))
             return
         serial, code, gold, got = pending
         index = obf.dec_u16(b[9:11])
         if not 0 <= index < len(got):
-            s.send(Writer(S2C_TAKE_CHOICE).u16(BAG_FULL))
+            s.send(Writer(S2C_TAKE_CHOICE).u16(ITEM_LOCKED))
             return
         item, n = got[index]
         it = bag_item(c, serial)
         if it["code"] != code or item_use_refusal(c, code):
-            s.send(Writer(S2C_TAKE_CHOICE).u16(BAG_FULL))
+            s.send(Writer(S2C_TAKE_CHOICE).u16(ITEM_LOCKED))
             return
         if not fits(c, [(item, n)], it["slot"] if it["count"] == 1 else None):
-            s.send(Writer(S2C_TAKE_CHOICE).u16(CHOICE_BAG_FULL))
+            s.send(Writer(S2C_TAKE_CHOICE).u16(GAIN_BAG_FULL))
             return
         take_serial(c, serial, 1)
         count_item_day(c, code)
@@ -2447,16 +2398,16 @@ def make(state, port, game_host, game_port):
         c = s.data["char"]
         it = next((i for i in c.get("bag", []) if i["slot"] == slot), None)
         if it is not None and item_use_refusal(c, it["code"]):
-            s.send(Writer(S2C_OPEN_GACHA).u16(BAG_FULL))
+            s.send(Writer(S2C_OPEN_GACHA).u16(ITEM_LOCKED))
             return
         got = items.open_gacha(it["code"], random.randrange) if it else None
         if got is None:
             log.warning("gacha at bag slot %d refused (%s)", slot, it and it["code"])
-            s.send(Writer(S2C_OPEN_GACHA).u16(BAG_FULL if it else 1))
+            s.send(Writer(S2C_OPEN_GACHA).u16(ITEM_LOCKED if it else 1))
             return
         code, n = got
         if not fits(c, [(code, n)], slot if it["count"] == 1 else None):
-            s.send(Writer(S2C_OPEN_GACHA).u16(BAG_FULL))
+            s.send(Writer(S2C_OPEN_GACHA).u16(GACHA_BAG_FULL))
             return
         take_serial(c, it["serial"], 1)
         count_item_day(c, it["code"])
@@ -2483,6 +2434,7 @@ def make(state, port, game_host, game_port):
             s.send(Writer(S2C_START_GAME_RES).u16(START_REFUSED).raw(bytes(37 + 32)))
             return
         s.data["char"] = c
+        s.data.pop("team", None)                      # the client enters the world without a party (party.team)
         getattr(state, "world_sessions", {})[acct.get("id")] = s     # a room's win may send the client on (continue_mission)
         s.data.pop("cooldowns_sent", None)            # this character's cooldowns go with its first quick-bar page
         if normalize_bag(c):                          # items from before the bag ranges: into their own tab
@@ -2554,6 +2506,7 @@ def make(state, port, game_host, game_port):
         for w in titles.login_packets(c):      # titles, achievement counters, vehicles (0x10f0, 0x10f2, 0x10f3)
             s.send(w)
         s.send(spot_schedule_packet())         # when the time-limited spots open (0x4078)
+        raid.on_login(s, state, c)             # the raid's binding (0x5a4a; nothing while RESET_SCHEDULE is None)
         if tutorial:
             # new character: straight into the first mission (lobby handler @ 0x140e79d70: u16 result;
             # sets the solo-mission flag GameStateManager+0x114 and switches state)
@@ -2862,6 +2815,7 @@ def box_transfer(s, state, b, src_box, dst_box, reply):
     serial, dst_slot, dst_serial = obf.dec_u64(b[0:8]), obf.dec_u16(b[8:10]), obf.dec_u64(b[10:18])
     n, src_slot = obf.dec_u16(b[18:20]), obf.dec_u16(b[20:22])
     c = s.data["char"]
+    before = {i["slot"]: deepcopy(i) for i in c.get("bag", [])}
     if not move_stack(c, src_box, dst_box, serial, src_slot, dst_slot, n, dst_serial):
         log.warning("%s -> %s refused: %d of serial %#x at %d -> %d (target %#x)", src_box, dst_box, n, serial,
                     src_slot, dst_slot, dst_serial)
@@ -2870,7 +2824,8 @@ def box_transfer(s, state, b, src_box, dst_box, reply):
     state.save()
     s.send(Writer(reply).u16(0))
     s.send(warehouse_packet(c, 0))
-    send_cargo(s)
+    after = {i["slot"]: i for i in c.get("bag", [])}    # 0x1656 alone left the open bag drawing them (live d8_wh4)
+    send_cargo(s, changed_slots=sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k)))
 
 
 HERO_BAR_KEYS = 8                       # slots per hero bar row: keys 1-8 = slot bytes 0-7 (type 0, group 0; the live
@@ -3430,8 +3385,10 @@ def add_exp(s, state, amount, why=None):
             why=cause(why))
     c["level"], c["exp"] = level, exp
     send_exp(s)
+    room = s if "battle" in s.data else getattr(state, "game_sessions", {}).get((s.data.get("account") or {}).get("id"))
+    room = room if room is not None and "battle" in room.data else None   # a quest's exp comes on the world connection
     if grew:                                    # after "The hero levelled up." (0x124a), as on the tape: the AutoLearn
-        skills.level_up(s, c, before)           # rows the level brings and raises (0x1761, recorded in c["skills"])
+        skills.level_up(s, c, before, room)     # rows the level brings and raises (0x1761, recorded in c["skills"])
         was = skills.bar_skills(c, before)
         if seat_skills(c, [a for a in skills.bar_skills(c) if a not in was]):
             s.send(quick_slot_page_packet(c, 0))    # the new skill on its row's first free slot (tape: Capture to
@@ -3443,9 +3400,9 @@ def add_exp(s, state, amount, why=None):
         if daily.top_up(c):                     # a level band with more daily tasks (17+): today's list grows
             for w in daily.list_packets(c):
                 s.send(w)
-        if "battle" in s.data:                  # levelled inside a room (kill exp): the effect and new numbers
-            from . import game
-            game.room_level_up(s, c)
+        if room is not None:                    # levelled with a room open (kill exp, a quest in a field): the effect
+            from . import game                  # and the new numbers, on the room's own connection
+            game.room_level_up(room, c)
         titles.achieve(s, state, "HeroLv", value=level)
         quest.on_level(s, state)
 
@@ -3628,16 +3585,19 @@ def send_field_entry(s, spot, group, leave_battle):
     (spot, group) for MissionInfo::FindPlayerStartPoint (battle state +0x6e8 / +0x6ec); from inside a battle room
     0x4049 takes the client out first; then 0x3f41 sends it to the game server, where it loads at that start point.
     Group 0 (no warp) is the field's default start point. Probe-verified 2026-09-27 (group 2 of Mist Field).
-    Into a Field of the room's own map the 0x4049 names the room's own spot (same_map_field; ours): that changes
+    Into a Field of the room's own map the 0x4049 names the client's current spot (same_map_field; ours): that changes
     nothing in 0x140d65c60, so the client ends the battle and waits in WarpWait for the 0x3f41 that names the field,
-    as for warp 704 into the same field (live 13:30:06); the field's own spot would keep the battle (13:54:21)."""
+    as for warp 704 into the same field (live 13:30:06); any other spot of that map sets the flag and keeps the battle
+    (13:54:21). The current spot is the room's, unless a 0x5641 went first: that makes its warp's spot current
+    (0x140cc0538, a plain setter), and naming the room then moved it back and set the flag (warp 705: traced 2026-11-05
+    07:48:43, the Players deleted at the go, the warp poll crashed on the null local Player at 0x140b40a50)."""
     c = s.data["char"]
     room = s.data.get("battle_spot")            # the room the client is in (its current spot), before this entry
-    named = room if leave_battle and same_map_field(room, spot) else spot
     back = c.pop("mission_return", None)        # a finished mission's way back (game.leave_mission): its warp, once
     warp = back["warp"] if back and back["spot"] == spot and back["group"] == group else field_warp(spot, group)
     if warp is not None:
         s.send(Writer(S2C_WARP_PROCESS).u8(1).raw(obf.u32(warp)).u8(WARP_KIND_FIELD))
+    named = room if leave_battle and warp is None and same_map_field(room, spot) else spot
     pos = start_point(spot, group)
     if pos is not None:
         c["pos"] = list(pos)
@@ -3870,6 +3830,7 @@ def write_char_entry(w, c):
     struct.pack_into("<I", e, 0x46, c["id"])
     e[0x4e] = OBOOL_FALSE if prologue else OBOOL_TRUE    # past the prologue -> +0x1539: the location from +0x0f
     worn = equipped_items(c)
-    w.raw(bytes(e)).cstr(c["name"]).cstr("").u8(len(worn))
+    w.raw(bytes(e)).cstr(c["name"]).cstr(guild.name_of(c)).u8(len(worn))   # the guild's name: without it the
+                                                                            # guild is gone after a relog (guild.py)
     for rec in worn:
         w.raw(rec)

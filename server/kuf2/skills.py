@@ -171,7 +171,7 @@ def learned_packet(c, entries):
     return w
 
 
-def level_up(s, c, before):
+def level_up(s, c, before, room=None):
     """A hero level gained from `before` (world.add_exp): what it brings (gained) goes to the client as the original's
     0x1761, is recorded (record_auto) and journaled ("skill"); inside a room the kit follows and the new abilities are
     usable at once (0x50a9). Returns the entries."""
@@ -183,11 +183,11 @@ def level_up(s, c, before):
     s.send(learned_packet(c, entries))
     journal("skill", ev="level", id=c["id"], name=c.get("name"), level=c.get("level", 1),
             levels=[[a, old.get(a, 0), lv] for a, lv in entries])
-    if "battle" in s.data:
-        kit = s.data.get("kit") or {}
-        s.data["kit"] = battle_abilities(c)
-        for aid in sorted(set(s.data["kit"]) - set(kit)):
-            s.send(Writer(S2C_ROOM_SKILL).u16(0).u32(aid))
+    if room is not None:                                # the room's session: the game connection, whoever paid the exp
+        kit = room.data.get("kit") or {}
+        room.data["kit"] = battle_abilities(c)
+        for aid in sorted(set(room.data["kit"]) - set(kit)):
+            room.send(Writer(S2C_ROOM_SKILL).u16(0).u32(aid))
     log.info("level %d: hero skills %s", c.get("level", 1), entries)
     return entries
 
@@ -198,7 +198,9 @@ def battle_abilities(c):
     no tree skill and is within the hero's level, at its parent's level, repeated until nothing is added. That is the
     class's whole kit: the Gunslinger's R reload stances (63-66, 71, 72 and their slashes 78-81, parent 15 aimed
     shot), dash 2, evade 14, counter 85, executions 91 hang off the auto-learned 15 / 62 / 9; tree follow-ups (e.g.
-    56-61 under 8) come with the tree skill. Rows without an abilitytypeinfo row are left out (the client asserts)."""
+    56-61 under 8) come with the tree skill. Rows without an abilitytypeinfo row are left out (the client asserts). The
+    guild's cores come last (guild.hero_kit; sorted, they follow every other id): without them the list is unchanged."""
+    from . import guild
     rows = book(c["class"])
     known = {r["AbilityId"] for r in tables.sections("abilitytypeinfo")["Basic"]}
     level = c.get("level", 1)
@@ -212,6 +214,7 @@ def battle_abilities(c):
                     and num(r["HeroLevel"], 1) <= level and str(aid) in known):
                 held[aid] = held[parent]
                 grew = True
+    held.update(guild.hero_kit(c))
     return held
 
 

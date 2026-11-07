@@ -646,6 +646,8 @@ def room_row(c, t, live=True):
     worn = set_effect(c)                        # the main deck's set status: its non-speed traits (T1.10)
     if worn and any(u == t.get("uid") for u in lineup(c)["slots"][1:]):
         traits += status.status_traits([worn], level, live=live)
+    from . import guild                         # the guild's learned troop skills: their statuses' traits, the same way
+    traits += status.status_traits(guild.troop_statuses(c, t["id"]), level, live=live)
     return level_row(t["id"], level, [b["code"] for b in t.get("badges", [])], traits)
 
 
@@ -864,9 +866,12 @@ def gain_exp(c, t, amount):
     the rest is lost. A troop at its MAX_LEVEL keeps nothing (the window's "Max XP"): the barracks pool gets one share
     a win whoever is at the max (barracks_share; the tape's 20304 / 20305 windows, two Lv 30 troops, one share). The
     hero's level does not cap it (the barracks' does). Returns (level before, the exp it kept): the window's troop
-    line (T2.3: 369 / 53 at New Hampton, not the 375 paid; record slot +0x3b)."""
+    line (T2.3: 369 / 53 at New Hampton, not the 375 paid; record slot +0x3b). The guild's TroopExp_Up skill raises
+    the amount first (guild.troop_exp: guild_point %Util_Skill 301, +10 %)."""
+    from . import guild
     before, had = t["level"], t["exp"]
     top = int(_num((troop_row(t["id"]) or {}).get("MAX_LEVEL"))) or 1
+    amount = guild.troop_exp(c, amount)
     if amount <= 0:
         return before, 0
     if t["level"] >= top:
@@ -1265,15 +1270,16 @@ def make(role, state):
             s.send(Writer(S2C_TACTICS_UP).u16(0x6401 if currency == "Gold" else 0x6430))
             return
         learned[str(ability)] = {"level": cur + 1, "exp": 0}
-        if currency == "Cubic":
-            world.spend_cubic(s, state, count)
-        else:
-            world.add_gold(s, state, -count)
-        state.save()
         s.send(Writer(S2C_TACTICS_UP).u16(0).raw(obf.u32(ability)).u8(cur + 1))
         s.send(tactics_one_packet(ability, learned[str(ability)]))     # 0x10bd: the academy map and every troop's
                                                         # skill list (+0x250) and deck quick slot take the new level
                                                         # (0x140da5310); the full list 0x10bc refreshes the map only
+        # the balance last (it saves): 0x1751's handler draws the window's gold as the balance minus the cost it kept
+        # (0x14063ec90); a new balance first took the cost off twice on screen (live d9_tac4: 144,507, the save 144,647)
+        if currency == "Cubic":
+            world.spend_cubic(s, state, count)
+        else:
+            world.add_gold(s, state, -count)
 
     @role.on(C2S_UNEQUIP_SKILL)
     def unequip_skill(s, pkt):

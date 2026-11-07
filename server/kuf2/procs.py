@@ -63,6 +63,39 @@ def packet(serial, caster, ability, level, target):
             .u8(nibbles).u16(0).u16(target).raw(obf.u32(ability)).raw(struct.pack("<h", AIM_AT_TARGET)))
 
 
+def force(s, why, caster, ability, level, target):
+    """0x50af with a new cast serial kept as a 0x505f cast's (combat.casts / cast_ability), so the client's executes of
+    it take the usual path (damage, statuses: status.on_execute)."""
+    serial = s.data["cast_serial"] = s.data.get("cast_serial", 0) % 0xfffd + 1
+    s.data.setdefault("casts", {})[serial] = struct.pack("<H", caster)
+    s.data.setdefault("cast_ability", {})[serial] = ability
+    s.data.setdefault("proc_levels", {})[ability] = level
+    s.send(packet(serial, caster, ability, level, target))
+    net.journal("proc", condition=why, ability=ability, level=level, target=target, serial=serial)
+    log.info("proc: %s -> ability %d (level %d) on troop %d, serial %d", why, ability, level, target, serial)
+
+
+def troop_shot(s, caster, ability, level, targets, rng=random):
+    """A troop's cast whose SELF status holds TROOP_PROCSKILL (statuseffectinfo %Function, 175 rows, all
+    DO_ATTACK_KIND_RANGE): the status fires its ability on the troop's ranged attack, and the cast's own shot at its
+    target is the first one (ours [I]: the tape's trebuchet, part 3 26:14 -> 26:28, hits once per Ctrl + A with no
+    attack of its own). New Hampton's 200140 -> 2001100 -> 200139. The later attacks of a status that outlives its
+    shot are still open (COMBAT F15)."""
+    enemy = [u for u in targets if status.side(s, u) != status.side(s, caster)]
+    if not enemy:
+        return
+    for st, lv, obj, *_ in status.ability_statuses(ability, level):
+        shot = status.troop_proc(st, lv) if obj == "SELF" else None
+        if shot and rng.randrange(100) < shot[2]:
+            if status._basic().get(shot[0], {}).get("Category") == "TACTICS":
+                force(s, "TROOP_PROCSKILL", caster, shot[0], shot[1], enemy[0])
+                continue
+            from . import game                   # 0x50af takes no action skill ("Server request ability must none action
+            game.send_actions(s, [game.ACT_TROOP_USE_SKILL, caster, enemy[0], 0, shot[0]])   # skill"): the troop uses it
+            net.journal("proc", condition="TROOP_PROCSKILL", ability=shot[0], target=enemy[0], by=caster)  # as a key would
+            log.info("proc: troop %d uses ability %d on troop %d", caster, shot[0], enemy[0])
+
+
 def roll(s, condition, target=None, rng=random):
     """The hero's procs of `condition` (EACH_ATTACK with the first troop the hit landed on, BLOCK / WHEN_ATTACKED with
     the attacker): each rolls its chance; a success is cast for him by 0x50af (TARGET on `target`, SELF on him) with a
@@ -77,14 +110,7 @@ def roll(s, condition, target=None, rng=random):
             continue
         if chance < 1000 and rng.randrange(1000) >= chance:
             continue
-        serial = s.data["cast_serial"] = s.data.get("cast_serial", 0) % 0xfffd + 1
-        s.data.setdefault("casts", {})[serial] = struct.pack("<H", 0)
-        s.data.setdefault("cast_ability", {})[serial] = ability
-        s.data.setdefault("proc_levels", {})[ability] = level
-        on = target if aim == "TARGET" else 0
-        s.send(packet(serial, 0, ability, level, on))
-        net.journal("proc", condition=condition, ability=ability, level=level, target=on, serial=serial)
-        log.info("proc: %s -> ability %d (level %d) on troop %d, serial %d", condition, ability, level, on, serial)
+        force(s, condition, 0, ability, level, target if aim == "TARGET" else 0)
         done.append(ability)
         break                                           # one proc a time: the next waits for the mark to end [I]
     return done

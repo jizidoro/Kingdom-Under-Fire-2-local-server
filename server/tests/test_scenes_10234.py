@@ -2,12 +2,13 @@
 (planning/scripts/missions/10234.md, playthrough part 2 29:46-43:28): the opening, the corpse kobolds, a wake and its
 fall, the win; its lessons: the F4 lesson waits for the player's F4, the finisher lesson is the client's own F pages
 and its panel line completes on the finishing attack."""
+import math
 import struct
 
 import pytest
 
-from kuf2 import director, game, status
-from test_battle import NoSave, acts, down_all, mission_room, walk
+from kuf2 import director, game, obf, status, zone
+from test_battle import NoSave, acts, down_all, mission_room, pkt, read_prop, walk
 from test_director import (answer, cutscenes, lines_shown, obey, press, prompts, queries, rooms_at_cutscenes,
                            run_pending)
 from test_scenes_10233 import closes, tutorials
@@ -236,7 +237,10 @@ def test_the_rear_archers_felled_first_leave_glens_two_lines_in_the_tapes_order(
 
 
 def down_every_enemy(s):
+    """Every enemy up to the troll's force: its fall wins the room (WIN = "table"), whatever still stands."""
     for _ in range(100):
+        if 20082 in s.data.get("down", ()):
+            break
         alive = [u for u, z in s.data["zone_troops"].items() if game.hostile(z) and u not in s.data.get("down", set())]
         if not alive:
             if not s.data["waves"]:
@@ -264,18 +268,75 @@ def test_the_ending_scene_is_sent_with_its_cast_in_the_room_after_the_lines(monk
     assert not sent_before(s, director.ACT_CUTSCENE, 13, 3150)
 
 
-def test_the_fortress_is_won_when_every_enemy_falls_after_the_ending():
+def test_the_fortress_is_won_when_the_trolls_force_falls():
+    # the tape: the troll at 2 hp under the finisher at 42:37 with "Eliminate the enemy (Complete)" on the panel, 3130 at
+    # 42:38, the ending from there, no walk back. Leg 5: every hostile had to fall, so the player went back for F20023,
+    # the wall sorcerer and the wolves
+    s = mission_room(10234)
+    run_pending(s)
+    game.spawn_force(s, 20080)
+    run_pending(s)
+    assert any(t.get("ForceNum") == 20023 for w in s.data.get("waves", ()) for t in w)
+    down_all(s, [u for u, t in s.data["zone_troops"].items() if t.get("ForceNum") == 20080])
+    run_pending(s)
+    assert s.data["mission_won"] and cutscenes(s)[-1] == 13
+
+
+def use_prop(s, prop):
+    role = game.make(NoSave(), 0)
+    role.handlers[game.C2S_PROP_CAST](s, pkt(game.C2S_PROP_CAST, struct.pack("<H", 0) + obf.u32(prop)))
+    role.handlers[game.C2S_PROP_CAST_DONE](s, pkt(game.C2S_PROP_CAST_DONE, b"\0\0" + obf.u32(prop)))
+
+
+def test_the_battlement_archers_open_fire_after_the_left_flank_wherever_the_hero_walks():
+    # the tape: the left flank at 35:38.5, the archers' shots and 2150 at 36:11-36:12; they stand at x 123,500, out of
+    # WAKE_RANGE from the straight way to the inner gate, and 2150-2170 and the Troop skill notice went with them
+    s = mission_room(10234)
+    run_pending(s)
+    assert not any(t.get("ForceNum") == 20052 for t in s.data["zone_troops"].values())
+    wake_force(s, 20051)
+    run_pending(s)
+    assert any(t.get("ForceNum") == 20052 for t in s.data["zone_troops"].values())
+    assert 2150 in ids(s) and (6026, 6027) in notices(s)
+
+
+def test_the_crystal_stones_complete_use_interact():
+    # the tape: "You can interact with the Crystal Stones through the F key." (6017, 39:43) with "Use Interact" on the panel,
+    # complete by 40:40. Leg 5 and the run of 2026-11-05: the cast went through (0x5094-0x5097) and the panel stayed
+    s = mission_room(10234)
+    run_pending(s)
+    bound = next(b for b in zone.for_spot(10234)["EventBound"] if b["EventBoundID"] == 10227)
+    walk(s, bound["BoundCenterX"], bound["BoundCenterZ"])
+    run_pending(s)
+    assert 420 not in done(s)
+    use_prop(s, 11011)
+    run_pending(s)
+    assert done(s).count(420) == 1
+
+
+def test_a_crystal_used_before_the_lesson_counts_when_the_lesson_comes():
+    s = mission_room(10234)
+    run_pending(s)
+    use_prop(s, 11000)
+    run_pending(s)
+    assert 420 not in done(s)
+    bound = next(b for b in zone.for_spot(10234)["EventBound"] if b["EventBoundID"] == 10227)
+    walk(s, bound["BoundCenterX"], bound["BoundCenterZ"])
+    run_pending(s)
+    assert done(s).count(420) == 1
+
+
+def test_the_ending_plays_before_the_victory_window():
     # The shipped scene has a last fade command at46.730s; the previous native
     # run returned control46.94s after receipt. Do not restore the picture at46s.
     ending = next(st for st in director.script(10234) if st['on'] == 'won')
     length = next(a[2] for a in ending['do'] if a[:2] == ('cutscene', 13))
     assert length > 46.94
-    # the win rule (no WIN = "table": the last enemy down, the troll's force 20080 the last wave); the ending plays
-    # first: Thompson's 3130, Glen's 3140 / 3150, 13_EndScene (19500-19550), then one victory window
+    # the ending plays first: Thompson's 3130, Glen's 3140 / 3150, 13_EndScene (19500-19550), then one victory window
     s = mission_room(10234)
     run_pending(s)
     down_every_enemy(s)
-    assert s.data["waves"] == [] and 20082 in s.data["down"]          # the Mountain Troll came last and fell
+    assert 20082 in s.data["down"]                  # the Mountain Troll fell
     assert not any(w.proto == game.S2C_MISSION_COMPLETE for w in s.sent) and not s.data.get("mission_won")
     run_pending(s)
     lines = [line for _, line in said(s)]
@@ -520,7 +581,7 @@ def test_the_left_flanks_attack_takes_the_unanswered_courtyard_prompt_down():
     wake_force(s, 20051)
     run_pending(s)
     assert director.KEY_ACTION not in prompts(s).values() and 6 not in cutscenes(s)
-    assert ids(s)[-2:] == [2130, 2140]
+    assert [x for x in ids(s) if x in (2130, 2140)] == [2130, 2140]
 
 
 def test_the_bridge_warning_waits_for_the_corpse_fights_call():
@@ -735,3 +796,160 @@ def test_glen_is_marked_as_he_leads_up_the_path_after_the_f4_key():
     # troop marker (ActGuiSetHighlightTroop 0xc7ba; the refinement builder "greyrock", frames); for about 3 s
     step = next(st for st in director.script(10234) if st.get("id") == "all troops")
     assert ("highlight troop", "글렌", 1, 3) in step["do"]
+
+
+INNER_GATE = {20074, 20075, 20076, 20077, 20078, 20079}  # the prisons (type 396) of the wolves of F20060
+INNER_YARD = {20080, 20081, 20082, 20083, 20084}         # and those of F20061, around the sorcerer's yard
+CAGES = INNER_GATE | INNER_YARD
+
+
+def prop_states(s):
+    """{prop id: state} of the props a one-record 0x50d1 changed (game.switch_on), the last state of each."""
+    out = {}
+    for w in s.sent:
+        b = bytes(w.buf)
+        if w.proto == game.S2C_PROP_LIST and struct.unpack_from("<H", b)[0] == 1:
+            r = read_prop(b[2:])
+            out[r["id"]] = r["state"]
+    return out
+
+
+def release_the_wolves(s):
+    wake_force(s, 20073)
+    top = s.data["battle"].troops[SORCERER]["max"]
+    director.on_hp(s, SORCERER, top * 4 // 10, top)
+    run_pending(s)
+
+
+def test_the_wolves_stay_caged_until_the_sorcerer_releases_them():
+    # the tape: "Since they're caged, they're not a threat to us at the moment." (2320, 37:12); a wolf behind closed
+    # bars to 38:11, the cage front down on "Release the Wolves!" (2360, frames 38:12-38:17), a wolf outside at 38:21.
+    # Live 2026-11-05: a closed cage holds its wolves still with the hero 1,300 away (F20060's 20047 / 20048), an open
+    # one lets them chase: their force's wake opened the cages at the hero's first pass, eight minutes early
+    s = mission_room(10234)
+    run_pending(s)
+    wake_force(s, 20060)
+    walk(s, 116900, 152600)                         # beside the cages (BARRIER_NEAR)
+    run_pending(s)
+    assert any(t.get("ForceNum") == 20060 for t in s.data["zone_troops"].values())
+    assert not CAGES & set(prop_states(s))
+    release_the_wolves(s)
+    assert {p: prop_states(s).get(p) for p in CAGES} == {p: game.PROP_SWUNG for p in CAGES}
+
+
+def test_the_cages_by_the_sorcerer_stay_shut_when_their_wolves_come_in():
+    # the tape's wolf behind bars at 38:09 stands by the sorcerer's yard, seen as the hero fights there, so F20061 is in
+    # its cages before the release. Leg 5 (03:58:51): the five prisons opened with F20061's wake, 23 s before 2360
+    s = mission_room(10234)
+    run_pending(s)
+    wake_force(s, 20061)
+    walk(s, 129000, 155000)                         # the middle of the yard (BARRIER_NEAR of 20083)
+    run_pending(s)
+    assert any(t.get("ForceNum") == 20061 for t in s.data["zone_troops"].values())
+    assert not INNER_YARD & set(prop_states(s))
+    release_the_wolves(s)
+    assert {p: prop_states(s).get(p) for p in INNER_YARD} == {p: game.PROP_SWUNG for p in INNER_YARD}
+
+
+def wolves_in(s):
+    wake_force(s, 20060)
+    wake_force(s, 20061)
+    run_pending(s)
+
+
+def straight(s):
+    return {a[2]: a[3] for a in acts(s, director.ACT_MOVE_STRAIGHT)}
+
+
+def test_the_wolves_leave_their_cages_in_a_straight_line():
+    # live 2026-11-05: an open cage is not enough. 12 of F20060's 18 wolf units stood on cells the client's pathfinder has
+    # no route from, and stayed; ActTroopMoveToAreaIgnoringPolyline walked all of them out (ign.py: 20045's three stuck
+    # units left OutOfTroop 6.5-7 s after it, positions continuous, no jump). The yard's own bounds: 10249 south, 10052
+    # north, 10056 the middle of the sorcerer's yard
+    s = mission_room(10234)
+    run_pending(s)
+    wolves_in(s)
+    assert not straight(s)
+    release_the_wolves(s)
+    want = {20043: 10249, 20044: 10249, 20045: 10249, 20046: 10249, 20047: 10052, 20048: 10052}
+    want |= {t: 10056 for t in range(20060, 20068)}
+    assert straight(s) == want
+    assert [a for a in acts(s, director.ACT_MOVE_STRAIGHT) if a[2] == 20045] == [
+        [director.ACT_MOVE_STRAIGHT, 0, 20045, 10249, 0, director.MOVE_RUN]]
+
+
+def test_a_wolf_killed_through_the_bars_gets_no_order():
+    s = mission_room(10234)
+    run_pending(s)
+    wolves_in(s)
+    s.data.setdefault("down", set()).update({20045, 20063})
+    release_the_wolves(s)
+    assert not {20045, 20063} & set(straight(s))
+
+
+def test_the_cage_falls_on_the_sorcerers_order_and_the_wolves_go_with_the_next_line():
+    # the tape: the cage front starts down on 2360 (38:12), is down by 38:17, a wolf outside at 38:21
+    step = next(st for st in director.script(10234) if st["on"] == "hp" and st["troop"] == SORCERER and st["below"] == 50)
+    kinds = [a[0] for a in step["do"]]
+    said = step["do"].index(("say", 20078, 2360))
+    assert set(kinds[:said]) == {"open"}
+    assert kinds.index("march straight") > said
+
+
+def test_the_wolves_left_behind_come_for_the_party():
+    # "Drat! The wolves that we left behind will come for us, too!" (2470, 38:26). Live 2026-11-05: with the hero 8,000 away
+    # 20047 / 20048 ran after him, the leashed 20043-20046 stood in the yard: the march is what makes the line true
+    s = mission_room(10234)
+    run_pending(s)
+    wolves_in(s)
+    release_the_wolves(s)
+    gone = {a[2]: a[3] for a in acts(s, director.ACT_MOVE_TO_AREA) if a[2] in range(20043, 20049)}
+    assert gone == {t: 10053 for t in range(20043, 20049)}
+
+
+def test_a_cage_opens_in_the_state_that_shows_it_open():
+    # live 2026-11-05 on prison 20075 (propset.py): state 0 closed with collision, 1 open with collision, 2 CLOSED to
+    # look at without collision (the "closed-looking" cages of 2026-10-09), 3 open without collision
+    s = mission_room(10234)
+    game.switch_on(s, game.zone_prop(10234, 20075))
+    assert prop_states(s)[20075] == game.PROP_SWUNG == 3
+    wall = next(p for p in zone.for_spot(10234)["SmartPropData"] if p["SmartPropTypeID"] == 68)
+    game.switch_on(s, wall)                         # the others as they were: state 2 takes their collision
+    assert prop_states(s)[wall["SmartPropID"]] == game.PROP_OPEN == 2
+
+
+def laid_out(s):
+    """{troop: (direction byte, x, z)} of the S2C 0x50b7 records sent: byte 0 the direction, bytes 1-2 unread, then the 0x50c0
+    position (4 packed bytes, i16 height, nibble byte), u16 troop (0x140cf4670)."""
+    out = {}
+    for w in s.sent:
+        if w.proto == game.S2C_TROOP_PLACED:
+            buf = bytes(w.buf)
+            for i in range(struct.unpack_from("<H", buf)[0]):
+                r = buf[2 + 12 * i:14 + 12 * i]
+                out[struct.unpack_from("<H", r, 10)[0]] = (r[0], *obf.dec_pos_xz(r[3:7], r[9]))
+    return out
+
+
+def test_a_zone_troop_is_laid_out_at_the_zones_angle_as_it_comes_in():
+    # 0x50cb has no direction, so the client builds a troop with its units on an axis-aligned square: in a narrow place that
+    # puts units where the client's pathfinder has no route (live 2026-11-05: path 0 on every request from each stuck wolf,
+    # the map of 0x1407a6970 from a grid of starts has every stuck unit on a dead cell and every free one on a live cell)
+    s = mission_room(10234)
+    run_pending(s)
+    wake_force(s, 20060)
+    assert not laid_out(s)                          # before its 0x50ab the client has no troop to lay out
+    for uid in (20045, 20046, 20047, 20048):
+        game.troop_bound(s, uid)
+    assert {u: r[0] for u, r in laid_out(s).items()} == {20045: 224, 20046: 249, 20047: 64, 20048: 89}
+    zt = s.data["zone_troops"]
+    assert {u: r[1:] for u, r in laid_out(s).items()} == {u: (round(zt[u]["PosX"]), round(zt[u]["PosZ"])) for u in zt
+                                                          if u in (20045, 20046, 20047, 20048)}
+
+
+def test_the_angle_byte_turns_the_zones_compass_into_the_clients_circle():
+    # zone Angle A: (sin A, 0, cos A) (0x140f685d0); 0x50b7 byte b: (cos, 0, sin) of b * 2 pi / 256 (0x140cf4828)
+    assert [game.angle_byte(a) for a in (0, 90, 180, 270, 360)] == [64, 0, 192, 128, 64]
+    for a in range(0, 360, 7):
+        phi = game.angle_byte(a) * 2 * math.pi / 256
+        assert abs(math.cos(phi) - math.sin(math.radians(a))) < 0.02 and abs(math.sin(phi) - math.cos(math.radians(a))) < 0.02

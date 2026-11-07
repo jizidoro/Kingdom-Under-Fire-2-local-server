@@ -72,6 +72,19 @@ def test_the_look_item_boxes_are_kept_and_reach_the_rooms_player_struct():
     assert struct.unpack_from("<I", p, 0x88)[0] == hidden
 
 
+def test_a_look_box_cannot_clear_the_parts_the_client_has_no_box_for():
+    # live 2026-11-07 (d8_look2): with no box ticked the client sends 0000e0ff (mask 0: its 21 flags common+0xbb0 are
+    # 0, nothing fills them at login), and ticking the Appearance tab's first box sent 0020e0ff (flag 13). The client
+    # toggles only parts 11..20 (0x140cdf5ff); stored raw, the mask cleared the room's +0x88 bits of the worn gear.
+    st = type("St", (), {"save": lambda self: None})()
+    role, s = world.make(st, 0, "127.0.0.1", 0), Session()
+    c = s.data["char"] = berserker(17, SOLDIER_GREATSWORD)
+    for body, kept in ((bytes.fromhex("0000e0ff"), 0), (bytes.fromhex("0020e0ff"), 1 << 13)):
+        role.handlers[world.C2S_LOOK_SHOWN](s, pkt(world.C2S_LOOK_SHOWN, body))
+        assert c["look_shown"] == hero.NO_LOOK_BOX | kept
+    assert hero.NO_LOOK_BOX == (1 << 11) - 1
+
+
 # --- G20: a broken piece's stats no longer count ("If the item's durability drops to 0, the item stats will be no
 # longer valid", texttutorial Item_Durability) -------------------------------------------------------------------------
 

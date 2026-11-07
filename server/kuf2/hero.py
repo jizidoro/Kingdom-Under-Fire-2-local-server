@@ -141,13 +141,16 @@ def wear_refusal(c, code):
 LOOK_PARTS = 21                    # the client's look array: one item code per equipment index (troop +0x1140)
 LOOK_NONE = 0xffffffff             # -1, nothing worn there (the troop's constructor 0x140bf363c; 0x140a4f580 puts the
                                    # class's default weapon on a -1 main / sub weapon)
-LOOK_SHOWN = (1 << LOOK_PARTS) - 1  # every part shown (troop +0x1194; the hero info's costume boxes clear bits, 0x107f)
+LOOK_SHOWN = (1 << LOOK_PARTS) - 1  # every part shown (troop +0x1194), what the rooms draw right with
+NO_LOOK_BOX = (1 << 11) - 1        # parts 0..10: the client toggles only 11..20 (0x140cdf5ff), so 0x107f always has 0 here
 
 
 def decode_look_shown(v):
-    """The shown mask a 0x107f carries (u32 plain = mask - 0x200000, builder 0x1405f6c60; requests
-    session_account_worldmap.md): bit i = equipment index i shown."""
-    return (v + 0x200000) & LOOK_SHOWN
+    """The mask a 0x107f carries (u32 plain = mask - 0x200000, builder 0x1405f6c60; requests
+    session_account_worldmap.md): bit i = the client's flag common+0xbb0+i, 1 when its Appearance box is ticked (live
+    2026-11-07: 0000e0ff with none, 0020e0ff with the first). Parts 0..10 have no box and stay as the rooms draw them
+    right; whether a ticked costume box shows or hides its part is not known (no costume was worn)."""
+    return ((v + 0x200000) & LOOK_SHOWN) | NO_LOOK_BOX
 
 
 def look_shown(c):
@@ -246,11 +249,12 @@ def title_ability(title):
 
 def char_stats(c, abilities=None):
     """stats of character c: its class, level, worn gear and enchants, the held abilities (skills.battle_abilities, or
-    `abilities`) and the worn title's (title_ability of c["title"])."""
-    from . import skills
+    `abilities`), the worn title's (title_ability of c["title"]) and his guild's learned hero skills
+    (guild.hero_abilities: 350001-350004, passives whose SELF traits count as the title's do)."""
+    from . import guild, skills
     held = skills.battle_abilities(c) if abilities is None else abilities
-    return stats(c["class"], c.get("level", 1), worn_codes(c), worn_enchants(c), held, title_ability(c.get("title")),
-                 worn_options(c))
+    return stats(c["class"], c.get("level", 1), worn_codes(c), worn_enchants(c), held,
+                 {**title_ability(c.get("title")), **guild.hero_abilities(c)}, worn_options(c))
 
 
 def worn_options(c):

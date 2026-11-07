@@ -377,3 +377,66 @@ def test_a_new_character_opens_the_clients_32_bag_slots_and_an_older_save_keeps_
     assert world.keep_old_bag(old) is True and world.bag_slots(old) == 48
     assert world.keep_old_bag(old) is False                                         # once
     assert items.expansion("inven", 32) == (50, 8) and items.expansion("inven", 48) == (250, 8)
+
+
+# A full bag's refusal is the code each reply handler shows as "no room" (live 2026-11-07: dismantling into a full bag
+# answered 0x447 and the client printed text 7623 "The item has been temporarily processed as not tradeable/usable.",
+# the English text table's line for 0x447; textsystem_mas.csv lacks it, so the specs had read it as "bag full").
+
+def full_bag(c, keep):
+    """Every open main-bag slot but those in keep holds one non-stacking weapon."""
+    c["bag"] = [i for i in c["bag"] if i["slot"] in keep]
+    c["bag"] += [{"code": WEAPON_A, "slot": n, "count": 1, "serial": 1000 + n, "bound": False}
+                 for n in range(world.bag_slots(c)) if n not in keep]
+
+
+def test_dismantling_into_a_full_bag_answers_its_no_room_code(role, monkeypatch):
+    s = Session()
+    c = s.data["char"]
+    c["bag"] = [{"code": WEAPON_B, "slot": 3, "count": 1, "serial": 51, "bound": False}]
+    full_bag(c, {3})
+    monkeypatch.setattr(items, "dismantle", lambda code, enchant, n, roll: [(STONE, 1), (POTION, 1)])
+    call(role, s, world.C2S_DISMANTLE, obf.u16(3) + obf.u16(1) + obf.u64(51))
+    assert last(s, world.S2C_DISMANTLE) == struct.pack("<H", 0x6403)       # 0x140dd0c10: text 7249 "Not enough
+    assert any(i["serial"] == 51 for i in c["bag"])                          # inventory space."
+
+
+def test_dismantling_redraws_the_open_bag_slots_it_changed(role, monkeypatch):
+    # live 2026-11-07 (d8_dis2): a dismantle answered with 0x1656 alone left the open bag drawing the sword until it was
+    # reopened. 0x1656's handler (0x140dce7d0) recomputes only the tab flags; 0x1657's (0x140dcef40) redraws slots.
+    s = Session()
+    c = s.data["char"]
+    c["bag"] = [{"code": WEAPON_B, "slot": 1, "count": 1, "serial": 51, "bound": False}]
+    monkeypatch.setattr(items, "dismantle", lambda code, enchant, n, roll: [(STONE, 1), (POTION, 1)])
+    call(role, s, world.C2S_DISMANTLE, obf.u16(1) + obf.u16(1) + obf.u64(51))
+    ids = [w.proto for w in s.sent]
+    assert ids.count(world.S2C_CARGO) == 1
+    assert ids.index(world.S2C_DISMANTLE) < ids.index(world.S2C_CARGO_CHANGE) < ids.index(world.S2C_CARGO)
+    changed = {1} | {i["slot"] for i in c["bag"] if i["code"] in (STONE, POTION)}
+    assert struct.unpack_from("<H", last(s, world.S2C_CARGO_CHANGE))[0] == len(changed)
+
+
+def test_taking_a_container_into_a_full_bag_answers_its_no_room_code(role):
+    s = Session()
+    c = s.data["char"]
+    c["bag"] = [{"code": BOX, "slot": 2, "count": 5, "serial": 41, "bound": True}]
+    full_bag(c, {2})
+    call(role, s, world.C2S_OPEN_CONTAINER, obf.u64(41) + obf.u16(1) + bytes([1]) + obf.u16(2))
+    assert last(s, world.S2C_OPEN_CONTAINER) == struct.pack("<H", world.ITEM_LOCKED)  # refused before it is shown
+    c["bag"] = [i for i in c["bag"] if i["slot"] == 2]
+    call(role, s, world.C2S_OPEN_CONTAINER, obf.u64(41) + obf.u16(1) + bytes([1]) + obf.u16(2))
+    assert last(s, world.S2C_OPEN_CONTAINER)[:2] == bytes(2)
+    full_bag(c, {2})                                                         # the bag filled after the open
+    call(role, s, world.C2S_TAKE_CONTAINER, obf.u64(41) + obf.u16(1) + bytes([1]) + obf.u16(2) + bytes(2))
+    assert last(s, world.S2C_TAKE_CONTAINER) == struct.pack("<H", 0x411)    # 0x1408aa2a0: text 0x1c65 "You don't
+    assert next(i for i in c["bag"] if i["serial"] == 41)["count"] == 5      # have enough space in the bag."
+
+
+def test_a_gacha_into_a_full_bag_answers_its_no_room_code(role):
+    s = Session()
+    c = s.data["char"]
+    c["bag"] = [{"code": 709000100, "slot": 4, "count": 2, "serial": 31, "bound": True}]
+    full_bag(c, {4})
+    call(role, s, world.C2S_OPEN_GACHA, struct.pack("<H", 4))
+    assert last(s, world.S2C_OPEN_GACHA) == struct.pack("<H", 0x6402)       # 0x10a5's handler: text 0x1c51 (7249)
+    assert next(i for i in c["bag"] if i["serial"] == 31)["count"] == 2

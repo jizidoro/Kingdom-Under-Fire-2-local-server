@@ -25,7 +25,10 @@ S2C_ALL_LOADED = 0x5042          # @ 0x140e59be0: obool late-join. true -> "Late
                                  # battle state, skipping InitInGame's world setup (black 3D view). false -> keep loading
                                  # (phase 6) until the mission script sends ActSystemRenderStart.
 S2C_HOST_CHANGE = 0x50b5         # @ 0x140e59e20 (loading) / Packet_HostChange (battle): u16 host id; == my id -> I simulate
-MY_SLOT = 1                      # header +1 slot id (= player id in the start records); also the host id
+MY_SLOT = 0                      # header +1 slot id (= player id in the start records); also the host id. It must equal
+                                 # the hero's troop uid: the client finds a troop's hero as the troop whose uid is the
+                                 # troop's owner id (GetHeroTroop 0x140bac2b1 and three more sites), so with 1 here and
+                                 # hero uid 0 no owned troop had a hero and Hero Support never followed (2026-11-06)
 # The player's hero is the leader of the first troop in 0x3f50 (0x140d0a370 stores troop 0's leader id
 # as the player's hero). For player heroes the leader id is the hero class: the leader-info map
 # *0x1435a4ac8 holds keys 0..5 (tools/frida/mapkeys.js); leadertable 300-310 are AI companions.
@@ -61,6 +64,7 @@ S2C_PROP_SET_STATE = 0x50a3      # 0x140d039a0, 8 bytes: coded u32 prop id, i32 
                                  # attackable prop is broken at 2 (GameSmartPropAttack vt+0x218 0x1419b7460: usable
                                  # while state != 2)
 PROP_BROKEN = 2
+COMPOSITE_DESTROYED = 4          # SmartPropCompositeStateType: TYPE_NORMAL, _DAMAGED1-3, then TYPE_DESTORY (the client's spelling)
 S2C_MISSION_COMPLETE = 0x5044    # GameStateBattleField::Packet_MissionCompletePVE (see mission_won)
 MISSION_RECORD = 0x2a1           # 673 bytes a player
 # E_MissionDifficult by value (name table 0x14353d0c0: Normal, Hard, Hell; index = value, inferred): the u8 of 0x3f48
@@ -122,7 +126,8 @@ S2C_REVIVE_CAMP = 0x50d7         # Packet_SystemRevivalRes 0x140d176d0: i16; 0 -
                                  # to the nearest start point but does not revive it outside PvP
 S2C_TROOP_DOWN = 0x505c          # 0x140d17560, 8 bytes: 5 unread, obool dead, u16 troop (+ obool when dead): dead FALSE
                                  # = the revive (reset + Troop::Enable, closes the death window); push_B.md
-S2C_DEATH_WINDOW = 0x50c6        # 0x140cffe00: u8 (first Flash argument, 0): the death window with the revive buttons
+S2C_DEATH_WINDOW = 0x50c6        # 0x140cffe00: u8, the window's countdown in seconds (ShowTimer; 0 times out at once over
+                                 # its static "99"): the death window with the revive buttons
 S2C_TROOP_LEAVE = 0x50cc         # LeaveCellTroop 0x140d06cc0: u16 n, n * u16 troop uid (sent before a respawn reuses it)
 S2C_PROP_DELETE = 0x509c         # 0x140d03cf0: u16 n, n * coded u32 prop id (gone, out of the F targets)
 S2C_PROP_REGEN = 0x509a          # Packet_SmartPropRegen 0x140d03f80, 7 bytes: u16 SmartPropTypeID, coded u32 prop id, byte
@@ -130,9 +135,17 @@ S2C_PROP_REGEN = 0x509a          # Packet_SmartPropRegen 0x140d03f80, 7 bytes: u
 PROP_KIND_ATTACK = 2
 S2C_TROOP_BACK = 0x50c0          # 0x140d01ea0, 9 bytes: packed position (7), u16 troop -> moved there and vt+0x370(0), the
                                  # call NotiCompleteRevivalTroop uses (the revive; inferred, not observed)
+S2C_TROOP_PLACED = 0x50b7        # Packet_MissionAllPlayerInfo 0x140cf4670: u16 n, n x 12: direction byte, 2 unread bytes, then
+                                 # 0x50c0's 9 bytes. A troop that is not mine: SetPosition 0x1407e4bd0 at that direction and
+                                 # InitPose vt+0x370(0), which lays its units on their slots (face_zone_angle)
 C2S_REVIVE_HERE = 0x50f4         # HUDRevivalSystem::ReqTroopRevival (0x1406900e0), 6 bytes: u16 troop, coded u32 item
                                  # (0xffffffff = none; a kind-0x24 revival item otherwise)
 S2C_REVIVE_HERE = 0x50f5         # 0x14068f960: i16; 0 -> u32 revivals used ("You are revived."); 0x7413 not now
+C2S_REVIVE_COUNT = 0x513b        # the battle HUD's init (0x14068e280, builder 0x140eff190), 0 bytes
+S2C_REVIVE_COUNT = 0x513c        # 0x140e10110: u32 revivals used, kept under my character key (HUD +0xd8 -> +0x38)
+C2S_REVIVE_BANS = 0x513d         # the battle HUD's init outside Field / Field_PK rooms (builder 0x140f0ebe0), 0 bytes
+S2C_REVIVE_BANS = 0x513e         # 0x140e101b0: u16 n, n x (u16 player, u32 revivals used), then 0x140690440: u16 m,
+                                 # m x (u16 troop, i32 ms of revive ban left -> HUD +0xd8 -> +0x28, counted down)
 S2C_FREE_REVIVES = 0x1089        # GameStateCommon 0x140d6ec80: u16 -> common+0x15c4, the free resurrections left (the
                                  # HUD's "Free Resurrection (xN)"; the confirm box then asks no price)
 FREE_REVIVES = 3                 # a game day, the hero's and the deck troops' together (texttutorial Basic_FreeRevival
@@ -142,6 +155,8 @@ GOLD_CAP_RESULT = 0x41a
 PROP_REFUSED = 1                 # any non-zero result ends the cast with the client's error text (0x1409182d0)
 PROP_OFF, PROP_ON = 0, 1         # switch states: the zone prop's two objects (e.g. sp_i_coc01 / sp_i_coc02)
 PROP_OPEN = 2                    # a vanishing / breaking switch's state without collision (game.switch_on)
+PROP_SWUNG = 3                   # a prison's open look without collision: live 2026-11-05 on 20075, 0 closed, 1 open with
+                                 # collision, 2 CLOSED to look at, no collision, 3 open, no collision (open_state)
 S2C_PROP_LIST = 0x50d1           # Packet_SmartPropUpdateList @ 0x140d062c0: u16 n, n * 23-byte record (write_prop)
 S2C_MISSION_TROOP_INFO = 0x50b8  # Packet_MissionTroopInfo @ 0x140d052e0: 61-byte troop state (+u16 if flag 0x40), tail 0x140d0cdc0
 # Troop-state flag byte (+0x3c), as 0x50b8 applies it: 0x04 create if missing, 0x10 sight on (Troop+0x94 bit 0x2000).
@@ -165,7 +180,7 @@ STAT_IDS = {"HP_MAX": 0, "HP_RECOVERY": 2, "SP_CURRENT": 6, "SP_MAX": 7, "SP_REC
             "DEFENCE_MAGICAL_DARK": 24, "CRITICAL_PHYSICAL": 25, "CRITICAL_MAGICAL": 26, "CRITICALPROB_PHYSICAL": 27,
             "CRITICALPROB_MAGICAL": 28, "PHYSICAL_PENETRATE": 29, "ACCURACY": 31, "MISS": 32, "ATTACK_SPEED": 39,
             "HIT_RESIST": 40, "CRITICAL_REDUCE": 43, "CRITICALPROB_RESIST": 76, "MAGICAL_PENETRATE": 83}
-S2C_LEVEL_UP = 0x508a            # Packet_NotifyLevelUp 0x140d1b7d0: u16 troop, obool, u8 level; plays LevelUp_Troop
+S2C_LEVEL_UP = 0x508a            # Packet_NotifyLevelUp 0x140d1b7d0: u16 troop, obool leader, u8 level. True: the leader unit (+0x838) and the HUD record (+0x918 +0x5c), effect LEVEL_UP_UNIT; false: the troop, LevelUp_Troop
 S2C_QUEST_ITEM_ALARM = 0x50aa   # QuestManager::Process_QuestItemDropAlarm 0x140d7c310: coded u32 box (prop) id, u8 n, n x
                                  # (coded u32 item, u16): marks the box and prints text 7233 "There is a box nearby that has
                                  # the quest item [%s] in it." per item (pushes_common.md)
@@ -194,10 +209,19 @@ UNDYING_MISSIONS = (10358, 10233, 10234, 10361, 10362, 10235,   # + Lunawing I /
 
 
 def is_mission(spot):
-    """A Battle spot whose room is built from its zone file (a quest's mission map, e.g. 10358)."""
+    """A spot whose room is built from its zone file: a Battle spot (a quest's mission map, e.g. 10358), or an
+    extreme (Spot_Type Raid, contents PVE_EXTREME: 20349, 20501, 20503), which the client opens for a lone player
+    through the solo room (0x3f48) and the original made clearable by one player in February 2020 (OFFICIAL-NOTES;
+    the party builder's report, 2026-11-05), or a 16-player raid (Spot_Type Raid, contents PVE_RAID: 20950, 20951;
+    20952 has no zone file), which only a party's room starts (party.start). A raid runs on the rules of every room
+    whose script is not shipped (mission_plan); its revive rules and reward dummies: party.py; its checkpoints and
+    binding: raid.py."""
     from . import tables, zone
     row = tables.by_id("spottable").get(str(spot))
-    return bool(row) and row.get("Spot_Type") == "Battle" and zone.available(spot)
+    kind = bool(row) and (row.get("Spot_Type") == "Battle" or
+                          (row.get("Spot_Type") == "Raid"
+                           and row.get("Spot_Contents_Type") in ("PVE_EXTREME", "PVE_RAID")))
+    return kind and zone.available(spot)
 
 
 def start_control_mode(spot, difficulty=0):
@@ -306,9 +330,7 @@ HERO_STATS = {
         41: 900, 42: 700, 79: 300},
 }
 # Battle-start requests answered with empty data (planning/todo/REQUEST-MAP-PLAN.md R0). Request -> (reply, body).
-EMPTY_REPLIES = {
-    0x513b: (0x513c, bytes(4)),          # 0x140e10110: u32 into a per-player map (UI object +0xd8)
-    0x513d: (0x513e, bytes(4)),          # 0x140e101b0: u16 n, n * 6, then 0x140690440: u16 n, n * 6
+EMPTY_REPLIES = {                        # (0x513d, the revive counts and bans, is revive_bans)
     0x5146: (0x5147, bytes(2)),          # 0x140c55ad0: u8 n, n * 9, then 0x14085f800: u8 n, n * 8
     0x3e40: (0x3e41, bytes(6)),          # PvP room lists (they may come on this connection): empty
     0x3e63: (0x3e64, bytes(6)),
@@ -323,6 +345,9 @@ MODE_PVE = 0                     # header +7: (b & 0xfc)==0 && b != 1 -> game st
 def make(state, port):
     role = Role("game", port, state)
     role.empty_replies(EMPTY_REPLIES)
+    from . import changetroop, party
+    changetroop.make(role, state)                # sub 0x78 on %Point spots: troop change, upgrade, timed revival,
+                                                 # summon, withdraw (0x50ec-0x512a; changetroop.py)
     # The sync-mode action request 0x50db and the 60 s timer 0x50fe: nothing waits on them. (0x5056, the hit-reaction
     # sync, carries the NP troops' melee blows: combat.on_hit_sync; 0x50ab says a troop is ready: troop_bound.)
     role.ignore(0x50db, 0x50fe)
@@ -350,7 +375,8 @@ def make(state, port):
             on_hero_position(s)                          # the player's troop moved (the Lunawing he flies)
     # specs/battle.md: relays for other players (the client knows it is alone: +0xb1), dev console / debug requests,
     # invasion, capture and raid paths, a background checksum.
-    role.ignore(0x504c, 0x5042, 0x5046, 0x5049, 0x504a, 0x504d, 0x5051, 0x5054, 0x5062, 0x506f, 0x5081, 0x5092,
+    role.on(combat.C2S_CHARGE_STEP, quiet=True)(combat.on_charge_step)   # a charged skill's stage (0x5062)
+    role.ignore(0x504c, 0x5042, 0x5046, 0x5049, 0x504a, 0x504d, 0x5051, 0x5054, 0x506f, 0x5081, 0x5092,
                 0x509f, 0x50b1, 0x50b6, 0x50bc, 0x50c4, 0x50c7, 0x50c9, 0x50cd, 0x50d3, 0x50d4, 0x50dc, 0x50de,
                 0x50df, 0x50e0, 0x50e1, 0x50e5, 0x50ea, 0x50ff, 0x5112, 0x513a, 0x513f)
 
@@ -388,6 +414,7 @@ def make(state, port):
         log.info("game login character=%d account=%d unk=0x%x spot=%d", char_id, s.data["account"]["id"], unk, spot)
         net.journal("room", ev="enter", spot=spot, difficulty=s.data["difficulty"], kind=room_kind(spot))
         s.send(Writer(S2C_GAME_LOGIN_RES).u16(0))
+        party.take_aipc(s, state)                # the AI PCs a party's start left on the world session (party.py)
         send_start_header(s, spot)
 
     @role.on(C2S_LOAD_PROGRESS)
@@ -404,7 +431,9 @@ def make(state, port):
             s.send(Writer(S2C_ALL_LOADED).obool(False))
             send_actions(s, [ACT_RENDER_START])
             # the state switch lands on a later frame; the rest goes to the battle state
-            s.later(1.0, lambda: (send_enter_cell(s), send_mission_troop_info(s), status.room_start(s),
+            s.later(1.0, lambda: (send_enter_cell(s), send_mission_troop_info(s), party.place_ai(s),
+                                  status.room_start(s),
+                                  changetroop.start(s),          # a %Point spot's Battle Points (nothing elsewhere)
                                   send_actions(s, [director.ACT_CAMERA_RESTORE_DEFAULT],
                                                [ACT_FADE, 1, 0, 1], [ACT_ENABLE_INPUT, 1])))
             battle = s.data["battle"] = combat.Battle()
@@ -412,6 +441,7 @@ def make(state, port):
             char = hero_char(s)
             battle.add_hero(0, hero_max_hp(s), c=hero_combatant(char))
             deck_enters(s, state, battle)
+            party.ai_enters(s, battle)                   # a party's AI PCs, on the player's team (party.py)
             # as the 0x3f4f struct started them, with the deck troops that take part
             s.data["pools"] = pools_for(char, s.data["spot"], (s.data.get("deck") or {}).values())
             from . import hero
@@ -523,6 +553,7 @@ def make(state, port):
         if back is not None and not loot:              # an item box's time starts when its window closes (prop_state)
             s.later(back, lambda: prop_return(s, p))
         rules.on_prop(s, p)                             # the Goblin Nest's entrance starts its trial
+        director.on_used(s, p["SmartPropID"])
 
     @role.on(C2S_PROP_CANCEL)
     def prop_cancel(s, pkt):
@@ -632,8 +663,10 @@ def make(state, port):
         Cubic price (revive_cost; the free camp revive is 0x50d6's). The troop it names (u16 +0): 0 the hero, else a
         wiped player-owned troop, including one handed over by the mission (the HUD's Resurrection button over
         its slot, priced by troop_revive_cost), brought
-        back by revive_troop; one revivals-used count for both (the 0x50f5 reply's)."""
-        from . import world
+        back by revive_troop; one revivals-used count for both (the 0x50f5 reply's). Under a raid's revive ban
+        (party.ban_left: 10 s from the fall, spottable %Revival PVE_RAID) it is refused with 0x7413, the code of the
+        client's own text for the ban (0xd03d)."""
+        from . import party, raid, world
         b = pkt.rest()
         uid = struct.unpack_from("<H", b, 0)[0] if len(b) >= 2 else 0
         battle = s.data.get("battle")
@@ -643,8 +676,10 @@ def make(state, port):
         if len(b) < 6 or not t or (t["hp"] > 0 if uid == 0 else not (status.players(s, uid) and wiped)):
             s.send(Writer(S2C_REVIVE_HERE).u16(REVIVE_NOT_NOW).u32(s.data.get("revivals", 0)))
             return
-        goods, limit = revival(s.data.get("spot"))
+        goods, limit = revival(s.data.get("spot"), s.data.get("difficulty", 0))
+        limit = raid.limit(s, limit)                     # an armed checkpoint's own (raid.py)
         refusal = (REVIVE_NOT_HERE if goods == "IMPOSIBLE" else
+                   REVIVE_NOT_NOW if party.ban_left(s, uid) > 0 else
                    REVIVE_NONE_LEFT if 0 <= limit <= s.data.get("revivals", 0) else None)
         item = obf.dec_u32(b[2:6])
         if refusal is None and item != 0xFFFFFFFF:
@@ -676,6 +711,26 @@ def make(state, port):
             revive_troop(s, uid, t)
         else:
             revive_hero(s, t, s.data.get("hero_pos") or start_pos(s))
+
+    @role.on(C2S_REVIVE_COUNT)
+    def revive_count(s, pkt):
+        """The battle HUD's init (HUDRevivalSystem 0x14068e280, every room): the revivals this player has used in
+        the room, the count revive_here keeps, so the revive confirm (0x14068f0b0) checks the spot's limit against
+        it (text 0xd03d when used up). Under 4 bytes the reply handler crashes."""
+        s.send(Writer(S2C_REVIVE_COUNT).u32(s.data.get("revivals", 0)))
+
+    @role.on(C2S_REVIVE_BANS)
+    def revive_bans(s, pkt):
+        """The battle HUD's init outside the fields (0x14068e280): the other players' revive counts (none: one
+        player; his own is 0x513c's) and the revive bans still running in the room (party.bans: a raid's 10 s from
+        each fall, which the HUD otherwise starts itself, 0x14068e990), so a HUD that starts again counts them
+        down from where they are. No ban: the four zero bytes sent before this handler."""
+        from . import party
+        left = party.bans(s)
+        w = Writer(S2C_REVIVE_BANS).u16(0).u16(len(left))
+        for uid, ms in left:
+            w.u16(uid).i32(ms)
+        s.send(w)
 
     @role.on(C2S_MISSION_LEAVE)
     def mission_leave(s, pkt):
@@ -759,6 +814,8 @@ def make(state, port):
         the troop that felled it; kill exp, the banner and a commander's SP go to the player when his side fought it
         (status.fights_player; the killer one of his own counts too)."""
         killer = s.data.get("killed_by", {}).pop(uid, None)
+        from . import party, raid
+        party.on_troop_down(s, uid)                  # a raid's revive ban starts for a player's troop (party.py)
         if uid in (s.data.get("deck") or {}):
             wiped = s.data.setdefault("deck_wiped", set())
             if uid not in wiped:                         # one wipe, however many hits report it: the result window's
@@ -774,19 +831,31 @@ def make(state, port):
                 net.journal("down", spot=s.data.get("spot"), troop=uid, hero=True, killer=killer)
                 s.data["hero_deaths"] = s.data.get("hero_deaths", 0) + 1     # each lowers the mission grade one step
                 kill_feed(s, uid, killer)
-                s.send(Writer(S2C_DEATH_WINDOW).u8(0))
+                cooldown = hero_revival_cooldown(s.data.get("spot"))
+                s.send(Writer(S2C_DEATH_WINDOW).u8(min(255, cooldown)))
+                if cooldown:
+                    token = s.data["hero_deaths"]
+                    s.later(cooldown, lambda: cooldown_revival(s, hero_t, token))
+                raid.on_hero_down(s)                     # no resurrection left: the closest checkpoint (raid.py)
                 from . import world
                 world.wear_down(s, state, "DIE")
             return
         t = s.data.get("zone_troops", {}).get(uid)
         if t is None:
             return
+        raid.on_troop_down(s, state, t)              # a raid's checkpoint arms as its boss falls (raid.py)
         credited = status.players(s, killer) or status.fights_player(s, uid)
+        if credited:                                 # a %Point spot's Battle Points for the kill (changetroop.py)
+            from . import changetroop
+            changetroop.on_kill(s, difficulty_troop(t["TroopTableID"], s.data.get("difficulty", 0)),
+                                difficulty_leader(t.get("NPLeaderID"), s.data.get("difficulty", 0)))
         net.journal("down", spot=s.data.get("spot"), troop=uid, force=t.get("ForceNum"), table=t["TroopTableID"],
                     killer=killer, credited=credited)
         from . import quest
         quest.on_kill(s, state, t["TroopTableID"], leader=t.get("NPLeaderID"))
-        exp = kill_exp(s.data["char"], difficulty_troop(t["TroopTableID"], s.data.get("difficulty", 0))) \
+        from . import events                             # a boost event that is on (events.ACTIVE_BOOST): exp, gold
+        exp = events.boosted("hero_exp", kill_exp(s.data["char"], difficulty_troop(t["TroopTableID"],
+                                                                                    s.data.get("difficulty", 0)))) \
             if credited else 0
         kill_feed(s, uid, killer)
         sp = status.commander_down(s, uid, t, credited)  # a commander's troop: SP, FP, his force demoralized (B36)
@@ -799,10 +868,11 @@ def make(state, port):
         if credited:                                     # the normal loot (D2), for a fight the player's side took
             got += loot.roll_drops(s.data["spot"], t["TroopTableID"],                       # part in, as the exp (ours)
                                    difficulty_leader(t.get("NPLeaderID"), s.data.get("difficulty", 0)))
-        drop_loot(s, got, repeat_gold(s.data["char"], s.data["spot"], s.data.get("difficulty", 0),
-                                      roll_gold(t["TroopTableID"])  # the troop's row is the variant it spawned as,
-                                      + roll_leader_gold(difficulty_leader(t.get("NPLeaderID"),     # and its leader's
-                                                                           s.data.get("difficulty", 0)))),
+        drop_loot(s, got, events.boosted("gold", repeat_gold(
+            s.data["char"], s.data["spot"], s.data.get("difficulty", 0),
+            roll_gold(t["TroopTableID"])                    # the troop's row is the variant it spawned as,
+            + roll_leader_gold(difficulty_leader(t.get("NPLeaderID"),               # and its leader's
+                                                 s.data.get("difficulty", 0))))),
                   at=s.data.get("last_pos", {}).get(uid))
         if is_mission(s.data["spot"]):
             mission_troop_down(s, state, uid)
@@ -811,6 +881,8 @@ def make(state, port):
         if delay is not None:
             s.later(delay, lambda: respawn_zone_troop(s, uid, t))
 
+    from . import pvp
+    pvp.make_game(role, state, troop_down)       # PvP against AI: its room's loading end and its win (pvp.py)
     return role
 
 
@@ -846,19 +918,33 @@ def send_start_header(s, spot):
     struct.pack_into("<H", h, 0x10, MY_SLOT)     # (+0x6de) compared with player records
     struct.pack_into("<H", h, 0x12, MY_SLOT)
     h[0x16:0x1a] = obf.u32(spot)                 # mission spot id
+    from . import pvp
+    if pvp.ai_room(spot):                        # PvP against AI: this header, then 16 players' records, structs
+        return pvp.send_start(s, spot, h)        # and troops (pvp.py)
+    from . import changetroop, party
     deck = deploy(s, spot)                       # the deck troops the room takes (B1): 1 + their count below
+    reserve = {}                                 # the reserve: built after them, left disabled (changetroop.py). A bare
+    if room_kind(spot) != "battle" and changetroop.reserve_limit(spot):     # battle room takes no deck: uid 1 its enemy
+        reserve = changetroop.reserve_for(char, spot, s.data.get("difficulty", 0), deck)
+        h[0x00] = changetroop.deploy_cap(s)      # the HUD slots' cap (sub 0x78)
+    s.data["reserve"] = reserve
+    ai = s.data.get("party_ai") or []            # a party's AI PCs: more players on the player's team (party.py)
     # 7-byte start record (0x140d09720 loop): u16 team, u16 player id, obool is-AI, u16 troop count (nonzero).
     # The team must match a mission start point (MissionInfo::FindPlayerStartPoint); single-player maps use team 0.
     # 0x140d0a370 gives each record's player its next `count` 0x3f50 entries, the first one his hero.
-    rec = struct.pack("<HH", PLAYER_TEAM, MY_SLOT) + bytes([1]) + struct.pack("<H", 1 + len(deck))
-    s.send(Writer(S2C_SPOT_ROOM_START).obool(False).raw(bytes(h)).u16(1).raw(rec))
+    rec = struct.pack("<HH", PLAYER_TEAM, MY_SLOT) + bytes([1]) + struct.pack("<H", 1 + len(deck) + len(reserve))
+    s.send(Writer(S2C_SPOT_ROOM_START).obool(False).raw(bytes(h)).u16(1 + len(ai)).raw(rec + party.start_records(ai)))
     p = player_struct(char, spot, deck.values())
-    s.send(Writer(S2C_START_PLAYER_INFO).u16(1).raw(bytes(p)).cstr(char["name"]).cstr(""))
-    w = Writer(S2C_START_TROOP_INFO).u16(1 + len(deck))
+    from . import guild
+    w = Writer(S2C_START_PLAYER_INFO).u16(1 + len(ai)).raw(bytes(p)).cstr(char["name"]).cstr(guild.name_of(char))
+    party.write_players(w, ai, spot)
+    s.send(w)
+    w = Writer(S2C_START_TROOP_INFO).u16(1 + len(deck) + len(reserve) + sum(1 + len(a["troops"]) for a in ai))
     write_troop(w, slot=0, uid=1, troop_id=HERO_TROOP_ID, leader_id=char["class"], leader_level=char["level"],
                 abilities=sorted(skills.battle_abilities(char).items()))
-    for uid, t in deck.items():
+    for uid, t in (*deck.items(), *reserve.items()):
         write_deck_troop(w, uid, t, char)
+    party.write_troops(w, ai)
     s.send(w)
     s.send(Writer(S2C_SPOT_ROOM_START).obool(True))
 
@@ -1070,7 +1156,7 @@ def player_key(c):
     2026-09-30 16:5x: the party bar back in solo missions, a deviation from the original, which shows none): in a Battle
     spot HUDPartyInfo (0x14076e480) lists our Player when its key is not 0 and clears the list as "only me" when the
     key is the character id (common+0xd4, 0x5084's u32), so the key is neither; above 0xffff it is no u16 player id
-    or NP owner (Player +0x50: our slot 1, NP_OWNER 0xfa, forces 10001..40040; their Players keep +0x54 = 0 from the
+    or NP owner (Player +0x50: our slot 0, NP_OWNER 0xfa, forces 10001..40040; their Players keep +0x54 = 0 from the
     reset 0x140b41730). Readers that look for the local player by the character id do not find it in a room (the
     escape echo 0x10b6 kind 3, the 'me' marker of the bar), as with the class we sent here before."""
     return PLAYER_KEY_BASE + c["id"]
@@ -1226,10 +1312,10 @@ def room_level_up(s, c):
     -> f_00461 (15:18 -> 15:20), the Swidden Area's clear pays 11,504 exp, "The hero levelled up." and the HUD goes from
     9,690 (Lv.19, the bar ~73 %) to 13,402 full (Lv.20), no potion; a clear alone heals nothing (RVJnrq3zPlo 10:50 -
     11:22 holds 8,299 of 9,493)."""
-    s.send(Writer(S2C_LEVEL_UP).u16(0).obool(False).u8(c.get("level", 1)))
+    s.send(Writer(S2C_LEVEL_UP).u16(0).obool(True).u8(c.get("level", 1)))
     room_stats(s, c)
     t = s.data.get("battle") and s.data["battle"].troops.get(0)
-    if t and t.get("hero") and not t.get("down") and t["hp"] > 0 and t["hp"] < t["max"]:
+    if t and t.get("hero") and not t.get("down") and t["hp"] > 0:     # at full hp too: room_stats' gain tells the HUD nothing
         t["hp"] = t["max"]
         send_troop_hp(s, 0, t["hp"], t["hp"])
 
@@ -1438,6 +1524,7 @@ def spawn_zone_troops(s):
                 log.info("zone troop %d (%s) handed to the player", t["TroopID"], t["TroopTableID"])
                 net.journal("hand", spot=spot, troop=t["TroopID"], start=True)
     log.info("field %d: %d zone troops spawned", spot, n)
+    arrive_at_door(s)
     if plan is not None:
         stage_hero(s)
         s.data["plan"] = dict(plan, hand=tuple(u for u in plan["hand"] if u not in later)) if later else plan
@@ -1500,7 +1587,7 @@ def troop_bound(s, uid):
     pending = s.data.get("field_sim_pending", set())
     net.journal("bound", spot=s.data.get("spot"), troop=uid, orders=len(waiting.get(uid, [])))
     # A hero that finishes building last also releases NPCs already bound. The packet's
-    # second word is the hero TROOP uid (0), not MY_SLOT (the Player id, 1).
+    # second word is the hero TROOP uid (0), which is also MY_SLOT (the Player id).
     ready = [uid] + (sorted(pending & bound) if uid == 0 else [])
     for ready_uid in ready:
         if ready_uid in pending:
@@ -1654,9 +1741,12 @@ def send_zone_props(s, spot, c):
     props = zone.for_spot(spot)["SmartPropData"]
     w = Writer(S2C_PROP_LIST).u16(len(props))
     shown = 0
+    opened = s.data.get("prop_states", {})
     for p in props:
         on = prop_shown(p["SmartPropTypeID"], r)
         state = PROP_ON if staging_prop(prop_row(p["SmartPropTypeID"]) or {}) else PROP_OFF
+        if p["SmartPropID"] in opened:      # switch_on ran while the troops spawned (a start step, a first wave): this
+            on, state = True, open_state(p)     # list comes after it and would hide the prop, collision and all (10306's 20015)
         write_prop(w, p["SmartPropID"], (round(p["PosX"]), round(p["PosZ"])), on, state=state)
         shown += on
     s.send(w)
@@ -1777,6 +1867,21 @@ def hostile(t):
     return str(row.get("EXP_FACTOR", "0")).strip() not in ("0", "", "-")
 
 
+def break_composite(s, uid):
+    """Wall troop uid (a UnitProp) fell: the composite wall its zone row links (LinkedComositeProp) goes, by 0x50a3, the only
+    way to 0x14091a0f0, which walks a composite's links (+0x390) and drops the collision of the sub-roots between it and
+    its neighbours. 0x50d1's state reaches vt+0x200 alone: the model changes and the collision stays. Live 2026-11-05: 19214
+    in state 4 through 0x50d1's path stayed solid (NO_PATH); through this one the hero walked the breach. The zones also
+    link ids they don't place (12039, 18004), and the wall stays whole through the bar's fall (part 3 26:50-27:22): one
+    state, at the fall."""
+    t = s.data.get("zone_troops", {}).get(uid, {})
+    p = zone_prop(s.data["spot"], t.get("LinkedComositeProp", -1))
+    if p is not None and "ID_CP" in (prop_row(p["SmartPropTypeID"]) or {}):
+        s.send(Writer(S2C_PROP_SET_STATE).raw(obf.u32(p["SmartPropID"])).i32(COMPOSITE_DESTROYED))
+        log.info("composite %d falls with troop %d", p["SmartPropID"], uid)
+        net.journal("composite", spot=s.data.get("spot"), prop=p["SmartPropID"], troop=uid)
+
+
 def mission_troop_down(s, state, uid):
     """A mission troop fell: once every spawned hostile troop is down the next held wave comes (next_wave), and the
     mission is won when no wave is left. Only a hostile troop's fall decides it: an ally's or a staging troop's decides
@@ -1784,6 +1889,7 @@ def mission_troop_down(s, state, uid):
     from . import zone
     down = s.data.setdefault("down", set())
     down.add(uid)
+    break_composite(s, uid)
     director.on_down(s, uid)
     t = s.data.get("zone_troops", {}).get(uid)
     if t is not None and (zone.np_troop(t["TroopTableID"]) or {}).get("NP_Grade") == "Boss" and hostile(t):
@@ -2036,6 +2142,8 @@ def mission_plan(spot, difficulty=0):
     allies = {}
     for f, ts in held.items():
         out |= {t["TroopID"] for t in ts}
+        if f in director.late_allies(spot):
+            continue                                    # a step brings it in ("wake": spawn_force), not its group
         ts = [t for t in ts if not any(w in str(t.get("TroopAlias") or "") for w in ALLY_STAGING)
               and (zone.np_troop(t["TroopTableID"]) or {}).get("UI_Visible") != "False"]
         if not ts or any(w in names.get(f, "") for w in ALLY_STAGING):
@@ -2173,9 +2281,11 @@ def wake(s, wave, why):
 
 
 def open_barriers(s, unit, why, only=None):
-    """Open the barriers waiting on unit (or the one prop `only`): switch_on, and they wait no more (G6)."""
+    """Open the barriers waiting on unit (or the one prop `only`): switch_on, and they wait no more (G6). Those the
+    table holds (HOLD_PROPS) open only by name: a force waking or falling leaves them shut (Grey Rock's cages)."""
+    held = director.held_props(s.data.get("spot"))
     for prop_id, (p, u) in list(s.data.get("barriers", {}).items()):
-        if (prop_id == only) if only is not None else (u == unit):
+        if (prop_id == only) if only is not None else (u == unit and prop_id not in held):
             del s.data["barriers"][prop_id]
             switch_on(s, p)
             log.info("barrier %d (type %s) opens: %s", prop_id, p["SmartPropTypeID"], why)
@@ -2193,6 +2303,7 @@ ACT_SITUATION_TITLE, ACT_SITUATION_GROUP, ACT_SITUATION_LINE = 0xc7ea, 0xc7ec, 0
 # ActGuiAddGageObjectiveToMissionSituation 0xc81e (0x140b37c30; switch 0x140b2b2b2): (team, group, text, value, max)
 # -> 0x140b5d690 -> HUDQuestInfo::SetMissionSituationGageConition 0x140775ab0: a condition of type 4 under the group,
 # found by its text and updated (+0xc value, +0x10 max), or added. Read 2026-09-28; not seen live.
+ACT_TROOP_USE_SKILL = 0xc3df      # ActTroopUseSkillbySkillID 0x140b33ce0: caster, target (0xffff none), a third, ability
 ACT_SITUATION_GAUGE = 0xc81e
 # ActGuiCompleteObjectiveToMissionSituation 0xc828 (0x140b37e50): (team, text, complete 1 / 0) -> 0x140b5d7b0 ->
 # HUDQuestInfo 0x140775f40: the condition with that text shown "(Complete)", in green (the original's panel, frames of
@@ -2765,6 +2876,8 @@ def mission_won(s, state):
     deaths = s.data.get("hero_deaths", 0)
     wipes = s.data.get("troop_wipes", 0)                # the window's death count: each deck troop wipe (the tape) and
                                                         # each hero death ([C]); our par grade takes the hero's only
+    from . import party
+    party.on_mission_won(s, state, c, spot, difficulty)  # a rift's cleared step and pay, a raid's dummy loot (party.py)
     ruled = rules.on_won(s, c)                          # a timed rule's (grade, pays); the day's clear counted
     if ruled is None and windowless(spot):
         end_without_window(s, state, c, spot, difficulty, secs)
@@ -2782,17 +2895,18 @@ def mission_won(s, state):
     row = reward_row(spot, difficulty, grade) if ruled is None or ruled[1] else None
     before, start = c.get("level", 1), hero_exp_percent(c)
     clears = c.get("cleared", {}).get(str(spot), [0, 0, 0])[difficulty]
-    exp = mission_exp(c, spot, difficulty, row, clears) if row else 0
+    from . import events                                 # a boost event that is on multiplies the rounded amounts
+    exp = events.boosted("hero_exp", mission_exp(c, spot, difficulty, row, clears)) if row else 0
     if exp:
         world.add_exp(s, state, exp, why=f"mission {spot} grade {GRADES[grade]}")
-    troop_exp = troop_mission_exp(spot, difficulty, row, clears) if row else 0
+    troop_exp = events.boosted("troop_exp", troop_mission_exp(spot, difficulty, row, clears)) if row else 0
     paid = deck_won(s, state, c, troop_exp)
     saved = troops.mission_pool(c, troop_exp)        # "Barracks Saved EXP": one share every win (T2.4, A5)
     if saved:
         s.send(troops.pool_packet(c))                # before the record: the window's gauge reads the pool now
     for t, tid in reward_dummies(spot, difficulty):     # the script killed them at the end: their loot at the hero
         got = loot.roll_drops(spot, tid, difficulty_leader(t.get("NPLeaderID"), difficulty))
-        drop_loot(s, got, repeat_gold(c, spot, difficulty, roll_gold(tid)))
+        drop_loot(s, got, events.boosted("gold", repeat_gold(c, spot, difficulty, roll_gold(tid))))
         log.info("reward dummy %d (%d) dropped %s", t["TroopID"], tid, got)
     graded = any(r["ID"] == str(spot) for r in tables.sections("mission_reward")["DATA"])
     category = loot.reward_category(row) if row else None
@@ -2826,6 +2940,8 @@ def mission_won(s, state):
     s.send(Writer(S2C_MISSION_COMPLETE).u16(0).u8(1).u32(secs).u8(1).raw(bytes(rec)))
     s.later(RESULT_CLOSE_S, lambda: director.window_closed(s))      # the table's "closed" steps (Tower's notice)
     quest.on_mission_clear(s, state, spot, difficulty)
+    from . import guild
+    guild.on_mission(s, state, row)                      # the reward row's Guild_Exp / Point / Contribution (guild.py)
     record_clear(c, spot, difficulty)
     count_state_clear(s, state, spot)
     state.save()
@@ -2964,18 +3080,49 @@ def return_group(back, qid):
                  and r["Require1_Type"] == "FinishOrDoingQuest" and r["Require1_Value"] == str(qid)), (0, None))
 
 
+def door_way_back(c, m):
+    """(spot, pos) of the mission door the hero left by, when the win ends there, else None. The tape after Grey Rock
+    (45:04-45:16): the hero stands at door 501 under "Greyrock Fortress Entrance", in the field he left (10359: the
+    panel reads "Different Area", the quest's EndSpot being 10350), and Glen 6010 beside him takes 1150601; 1150602's
+    SpotWarp 705 is what brings him to 10350. So a door mission ends at its door (zone start point of the mission's
+    MISSION warp) in c["spot"], the field left, if the NPC who takes the quest stands there. Ours beyond the tape: a
+    finisher elsewhere (1160113: Duran 6058 is not in 10351) leaves the end spot's rule to decide, so nobody is
+    stranded, and a quest-less room keeps its old way back. No footage shows those. The client starts a field at the
+    group's point whatever 0x4041 names (live 07:27:52), so the room moves him there: arrive_at_door."""
+    from . import tables, zone
+    left, row = c.get("spot"), tables.by_id("questtable").get(str(m.get("quest"))) or {}
+    if row.get("Finish_Type") != "Npc" or left is None or not zone.available(left):
+        return None
+    z = zone.for_spot(left)
+    if not any(str(n["TableID"]) == row.get("Finish_Value") for n in z["NPCInfo"]):
+        return None
+    doors = {int(r["ID"]) for r in tables.load("warpinfo")
+             if r["SpotID"] == str(m.get("spot")) and r["WARP_POSITION"] == "MISSION"}
+    for p in z["PlayerStartPointInfoData"]:
+        if p.get("LongWarpID") in doors and p["StartPointInfoData"]:
+            pt = p["StartPointInfoData"][0]
+            return left, (round(pt["PosX"]), 0, round(pt["PosZ"]))
+    return None
+
+
 def mission_way_back(c):
     """Where a won mission ends, on the character (its record c["mission"] is used up): the mission's end spot (the
     quest's EndSpot, else the spot it was entered from) at its return group's first start point (return_group), that
     group as the next field entry's (field_group), and the return warp for that entry's 0x5641, once (mission_return;
-    its EnterScript plays on the room's OnEnter). Returns (spot, group, pos). Read by leave_mission (0x4040) and by
-    an Esc exit after the win (world: 0x4048 in a won room)."""
+    its EnterScript plays on the room's OnEnter); with no return warp, the door the hero left by when door_way_back
+    finds one. Returns (spot, group, pos). Read by leave_mission (0x4040) and by an Esc exit after the win (world:
+    0x4048 in a won room)."""
     from . import world
     m = c.pop("mission", None) or {}
     back = m.get("back", c.get("spot", world.START_SPOT))
     group, warp = return_group(back, m.get("quest"))
-    pos = ((group and world.zone_start(back, group)) or world.zone_start(back) or world.TOWN_ENTRY.get(back)
-           or tuple(c.get("pos", world.START_POS)))
+    door = door_way_back(c, m) if warp is None else None
+    if door:
+        back, pos = door
+        c["door_return"] = {"spot": back, "pos": list(pos)}
+    else:
+        pos = ((group and world.zone_start(back, group)) or world.zone_start(back) or world.TOWN_ENTRY.get(back)
+               or tuple(c.get("pos", world.START_POS)))
     c["spot"], c["pos"], c["field_group"] = back, list(pos), [back, group]
     if warp is not None:
         c["mission_return"] = {"spot": back, "group": group, "warp": warp}
@@ -3120,32 +3267,43 @@ def respawn_zone_troop(s, uid, t):
 REVIVE_NONE_LEFT, REVIVE_NOT_HERE, REVIVE_NOT_NOW = 0x7411, 0x7412, 0x7413   # 0x50f5 refusals (any shows 0xd03a)
 
 
-def revival(spot):
+def revival(spot, difficulty=0):
     """(Revival_Goods, Limit_Revive) of spottable %Revival for the spot's Spot_Contents_Type, as the battle HUD reads
     them (HUDRevivalSystem init 0x14068e280: the row by content type, its Limit_Revive at +0x24, -1 without a row;
     the spot's own Limit_Revive column is not read there): PVE_NORMAL / REPEAT / CLIMAX CUBIC -1, PVE_RIFT CUBIC 5,
     PVE_EXTREME / RAID CUBIC 3, PVE_INVASION FREE 3, PVE_DAILY / WEEKLY IMPOSIBLE. No row: CUBIC, no limit, as
-    RevivalCostSetting 0x1406902f0 takes it (goods 1). The HUD refuses the same before sending (0xd03c, 0xd03d)."""
+    RevivalCostSetting 0x1406902f0 takes it (goods 1). The HUD refuses the same before sending (0xd03c, 0xd03d).
+    In a 16-player raid (Spot_Type Raid, Spot_Sub_Type Raid_16) the HUD then takes the limit from table raid
+    (0x14068e31d): %Raid Default_Number_Resurrection of the raid at the room's difficulty (3 on all five rows:
+    party.raid_row); in the room an armed checkpoint's Number_Resurrection replaces it (raid.limit, in revive_here)."""
+    from . import party
     ctype = (tables.by_id("spottable").get(str(spot)) or {}).get("Spot_Contents_Type")
     row = next((r for r in tables.sections("spottable")["Revival"] if r["ID"] == ctype), None)
     if row is None:
         return "CUBIC", -1
     limit = row["Limit_Revive"].strip()
-    return row["Revival_Goods"], int(limit) if limit.lstrip("-").isdigit() else -1
+    raid = (party.raid_row(spot, difficulty) or {}).get("Default_Number_Resurrection", "")
+    return row["Revival_Goods"], int(raid) if raid.isdigit() else int(limit) if limit.lstrip("-").isdigit() else -1
 
 
 def revive_point(s):
     """Where the free camp revive (0x50d6 -> 0x50d7, the position from the server) puts the hero: the zone's player
     start point (PlayerStartPointInfoData of the player's team, each entry's first point) nearest where he fell
     (s.data["hero_pos"]), else start_pos (census I3; "nearest" is the reading of FieldMap_RevivalSystem's name, the
-    original's choice is not in the client)."""
-    from . import zone
+    original's choice is not in the client). A raid's zone also holds its checkpoints' restart points (raid
+    %Check_Point Restart_Point_ID: 20950's StartPointIDs 100-115, far inside the map): left out (party.restart_points)
+    until their checkpoint is armed (raid.armed_points). So the camp revive stays among the points the party entered
+    at and the armed ones, and with no resurrection left it is text 0x16068's move "to the closest checkpoint"."""
+    from . import party, pvp, raid, zone
     spot, here = s.data.get("spot"), s.data.get("hero_pos")
     points = []
     if here and spot and zone.available(spot):
+        held = party.restart_points(spot) - raid.armed_points(s)
+        team = (pvp.room(s) or {}).get("team", PLAYER_TEAM)     # 20955 seats the player on the map's team 1
         points = [(round(p["StartPointInfoData"][0]["PosX"]), 0, round(p["StartPointInfoData"][0]["PosZ"]))
                   for p in zone.for_spot(spot)["PlayerStartPointInfoData"]
-                  if p.get("LongTeamID", PLAYER_TEAM) == PLAYER_TEAM and p["StartPointInfoData"]]
+                  if p.get("LongTeamID", PLAYER_TEAM) == team and p["StartPointInfoData"]
+                  and p.get("StartPointID") not in held]
     if not points:
         return start_pos(s)
     return min(points, key=lambda q: (q[0] - here[0]) ** 2 + (q[2] - here[2]) ** 2)
@@ -3174,12 +3332,44 @@ def revive_cost():
     return items.currency("Resurrect", 0)
 
 
+def hero_revival_cooldown(spot):
+    """The seconds the client counts before the fallen hero is back: %Point HeroRevivalCooldown, where the client reads
+    it (HUDHeroInfo 0x140769180: a %Point row and Spot_Sub_Type not PVP_HERO -> "Resurrecting in %d seconds." and the
+    hero bar's count). 30 on 20954-20956 and the other PVP_POINT maps, 0 on the PvE %Point spots, 0 without a row."""
+    from . import changetroop, party
+    row = changetroop.point_row(spot)
+    if row is None or (party.spot_row(spot) or {}).get("Spot_Sub_Type") == "PVP_HERO":
+        return 0
+    try:
+        return max(0, int(float(row.get("HeroRevivalCooldown") or 0)))
+    except ValueError:
+        return 0
+
+
+def cooldown_revival(s, t, token):
+    """The cooldown's end: the hero back, free (no points, not a counted revival), by the server's push, since the
+    client sends nothing then (planning/agents/reports/2026-11-07_pvp-hero-revival-timer.md). Nothing when he is back
+    already, fell again since (token = his death count at the fall), the room is won or gone, or a paid timed revival
+    (0x5108) is in its cast: that one finishes it. Ours: where he stands up, revive_point (the camp revive's rule);
+    the original's place is not in the client."""
+    from . import changetroop
+    battle = s.data.get("battle")
+    if (s.data.get("hero_deaths") != token or not t.get("down") or s.data.get("mission_won")
+            or not battle or battle.troops.get(0) is not t
+            or 0 in (s.data.get("changetroop") or {}).get("revival", {})):
+        return
+    revive_hero(s, t, revive_point(s))
+
+
 def revive_hero(s, t, pos):
-    """Bring the dead hero back at pos with full hp: 0x505c dead FALSE (the revive; it closes the death window), 0x50c0
-    (moves it there), 0x505d (hp). push_B.md; not yet seen live."""
+    """Bring the dead hero back at pos with full hp: 0x505c dead FALSE (the revive; it closes the death window), 0x505b
+    alive for his leader and unit 0, 0x50c0 (moves it there), 0x505d (hp). 0x505c resets the troop only: read live
+    2026-11-05 09:13, troop 0's +0x838 leader (0x30226c) and +0x848 unit (0x206c) both kept the dead bit 0x20, the hero
+    frozen and invisible; 0x140d17100's alive branch calls the unit's revive (vtable +0x5d8)."""
     x, y, z = pos
     q, p15 = obf.pos_xz(x, z)
     s.send(Writer(S2C_TROOP_DOWN).zeros(5).obool(False).u16(0))
+    combat.send_unit_live(s, 0, [], [combat.LEADER, 0])
     s.send(Writer(S2C_TROOP_BACK).raw(q).raw(struct.pack("<h", y)).u8(p15).u16(0))
     t.pop("down", None)
     t["hp"] = t.get("max", HERO_HP)
@@ -3217,7 +3407,10 @@ def revive_troop(s, uid, t):
     combat.send_unit_live(s, uid, [], alive)
     send_troop_hp(s, uid, sum(t["units"]), t.get("leader"))
     s.data.get("deck_wiped", set()).discard(uid)
+    s.data.get("down", set()).discard(uid)               # it stands: the director's arrive steps read it again
     status.troop_revived(s, uid)                         # its passives and set status again, then 34 (TROOPS T14.4)
+    from . import changetroop
+    changetroop.upgrade_statuses(s, uid)                 # an upgraded troop's statuses (a %Point spot; else nothing)
     log.info("player troop %d revived in place", uid)
     net.journal("revive", spot=s.data.get("spot"), troop=uid)
 
@@ -3267,8 +3460,14 @@ def switch_on(s, p):
     10528; its collision off, the hero walked from x 281408 to 279542 in 3 s of W (tools/frida/propstate.js)."""
     s.data.setdefault("prop_states", {})[p["SmartPropID"]] = PROP_ON
     out = Writer(S2C_PROP_LIST).u16(1)
-    write_prop(out, p["SmartPropID"], (round(p["PosX"]), round(p["PosZ"])), True, state=PROP_OPEN)
+    write_prop(out, p["SmartPropID"], (round(p["PosX"]), round(p["PosZ"])), True, state=open_state(p))
     s.send(out)
+
+
+def open_state(p):
+    """The state switch_on opens prop p with: a prison (감옥, Grey Rock's eleven wolf cages) shows closed in PROP_OPEN, so it
+    takes PROP_SWUNG. The other opening switches (열림 460-462, 492) stay as they were: not looked at in state 3."""
+    return PROP_SWUNG if "감옥" in prop_res_name(p["SmartPropTypeID"]) else PROP_OPEN
 
 
 def prop_return(s, p):
@@ -3355,19 +3554,39 @@ def stage_hero(s):
         log.info("mission %d: the hero to the opening scene at (%d, %d)", spot, hero[0], hero[1])
 
 
+def arrive_at_door(s):
+    """A field entered from a won door mission (door_way_back): the hero to that door, once, as stage_hero moves him at
+    a mission's start. The client's own entry names no door: what the original sent for it isn't known; 0x50c0 is ours."""
+    c = hero_char(s)
+    door = c.pop("door_return", None)
+    if door is None or door["spot"] != s.data.get("spot"):
+        return
+    x, y, z = door["pos"]
+    move_troop(s, 0, (x, y, z))
+    s.data["hero_pos"] = (x, y, z)
+    c["pos"] = [x, y, z]
+    log.info("field %d: the hero back at the mission's door (%d, %d)", door["spot"], x, z)
+
+
 ACT_ENABLE_TROOP = 0xea6a        # ActTroopSetEnableTroop (0x140b3d990 -> 0x140b2e030): (kind 0 = a troop uid, uid,
                                  # enable 1 / 0, flag); 0 -> 0x140ba3450 -> 0x1407e2bb0 (beside Troop::Die 0x1407e2ff0)
 
 
 def troop_leaves(s, uid):
     """A troop leaves the battle (director "leave": Vert escaping at 20 %): disabled in the client (not seen live), its
-    boss bar closed, down for the win rule and gone from the battle."""
-    send_actions(s, [ACT_ENABLE_TROOP, 0, uid, 0, 0])
+    boss bar closed, down for the win rule and gone from the battle. One of the player's first goes back to its own force:
+    the HUD's three troop slots are taken in order (OnAddPlayerTroop 0x14078c1b0) and a disabled troop keeps its slot,
+    ChangeForce from the player's id clears it (0x140ba36e4 -> 0x140b3fca0): 10345's lesson archer held F1, so the three
+    of the mock battle got F2, F3 and no slot (live 2026-11-06 08:17)."""
     t = s.data.get("zone_troops", {}).get(uid)
+    if t is not None and uid in (s.data.get("plan") or {}).get("hand", ()):
+        send_actions(s, [ACT_CHANGE_FORCE, 0, uid, t["ForceNum"], TROOPAITYPE_HEROSUPPORT])
+    send_actions(s, [ACT_ENABLE_TROOP, 0, uid, 0, 0])
     from . import zone
     if t is not None and (zone.np_troop(t["TroopTableID"]) or {}).get("NP_Grade") == "Boss":
         send_actions(s, [ACT_BOSS_STATUS, uid, 0])
     s.data.setdefault("down", set()).add(uid)
+    s.data.setdefault("left", set()).add(uid)
     s.data["battle"].troops.pop(uid, None)
     log.info("troop %d leaves the battle", uid)
     net.journal("left", spot=s.data.get("spot"), troop=uid)
@@ -3463,6 +3682,8 @@ def spawn_zone_troop(s, t):
     uid = t["TroopID"]
     team = t.get("TeamNum", NP_TEAM)
     rec, lead_rec, row, lead = np_records(t["TroopTableID"], team, row, lead)
+    if t.get("ForceNum") in director.harmless(spot) and uid not in director.hand(spot):   # a handed troop is the player's
+        rec, lead_rec = dict(rec, harmless=True), lead_rec and dict(lead_rec, harmless=True)   # copies: they are shared
     unit_hp = max(1, int(float(row["HP_BASEUNIT"])))
     lead_hp = max(1, int(float(lead.get("HP_BASEUNIT") or 0) or 1)) if lead else 0
     actives, passives = cell_abilities(rec, lead_rec, uid)
@@ -3472,6 +3693,7 @@ def spawn_zone_troop(s, t):
                   leader=(int(t["NPLeaderID"]), lead_hp) if lead else None, abilities=actives, passives=passives,
                   ai=ai)
     send_spawn_ai(s, uid, ai, zt=t)
+    face_zone_angle(s, uid, t)
     ally_holds = team == PLAYER_TEAM and spot in UNDYING_MISSIONS
     s.data["battle"].add_np(uid, unit_hp, units, c=rec, leader_hp=lead_hp, leader_c=lead_rec,
                             leader_floor=1 if ally_holds else 0)
@@ -3482,6 +3704,33 @@ def spawn_zone_troop(s, t):
     if row.get("NP_Grade") == "Boss" and hostile(t) and is_mission(s.data.get("spot")):
         send_actions(s, [ACT_BOSS_STATUS, uid, 1])      # its vitality bar (Mountain Troll 134080, Ochanku 118510)
     return True
+
+
+def angle_byte(angle):
+    """A zone Angle as 0x50b7's direction byte: Angle A faces (sin A, 0, cos A) (0x140f685d0), byte b faces (cos, 0, sin) of
+    b * 2 pi / 256 (0x140cf4828)."""
+    return round((90 - angle) * 256 / 360) % 256
+
+
+def face_zone_angle(s, uid, t):
+    """A zone troop stands at its zone Angle, its units laid out for it, once the client has it (its 0x50ab; before that
+    there is nothing to lay out). 0x50cb has no direction, so the client builds it with its units on an axis-aligned square;
+    the client's own zone spawn gives it the Angle at the build (0x140f67ac5, entry +0x74). 0xc382 turns the slots and leaves
+    the units where they stood, this lays them on the slots (live 2026-11-05: d = 0 on all 18 of Grey Rock's wolves). It does
+    not free units stuck in a narrow place: 12 of those 18 still started on cells with no route (13 on the square), so
+    their scene walks them out in a straight line (m10234's WAYS_OUT)."""
+    if t.get("Angle") is None:
+        return
+
+    def lay_out(s):
+        q, p15 = obf.pos_xz(round(t["PosX"]), round(t["PosZ"]))
+        s.send(Writer(S2C_TROOP_PLACED).u16(1).u8(angle_byte(t["Angle"])).u16(0).raw(q).raw(struct.pack("<h", 0)).u8(p15)
+               .u16(uid))
+
+    if uid in s.data.get("bound", ()) and uid not in s.data.get("field_sim_pending", ()):
+        lay_out(s)
+    else:
+        s.data.setdefault("await_bind", {}).setdefault(uid, []).append(lay_out)
 
 
 def np_records(np_troop_id, team, row, lead=None):
@@ -3797,6 +4046,9 @@ def send_actions(s, *actions):
             else:
                 w.u32(v)
         s.send(w)
+        if act[0] == ACT_ENABLE_ALL_TROOPS:          # it reaches the reserve too: out again at once (changetroop.py),
+            send_actions(s, *([ACT_ENABLE_TROOP, 0, uid, 0, 1] for uid in s.data.get("reserve") or ()),
+                         *([ACT_ENABLE_TROOP, 0, uid, 0, 0] for uid in sorted(s.data.get("left") or ())))  # and who left
 
 
 def send_condition(s, serial, cond, *args):

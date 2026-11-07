@@ -7,7 +7,7 @@ import pytest
 
 from kuf2 import combat, game, obf, status
 from kuf2.obf import T1, T2
-from kuf2.packet import Reader
+from kuf2.packet import OBOOL_TRUE, Reader
 from conftest import run_pending
 
 
@@ -611,15 +611,29 @@ def test_idle_state_is_answered_for_the_hero():
                                                           (world.S2C_IDLE, struct.pack("<iB", 1, 0))]
 
 
-def test_chat_is_echoed_with_the_sender_name():
+def test_chat_is_not_echoed_because_the_client_prints_its_own_line():
+    """0x140de132a / 0x140de35a8 print the line (0x140ddc1e0) and then send it; the emote senders print nothing and
+    0x140ddc1e0 looks 0xb's text up in the emotes. So an echo could only double a line or print "/bbl" as chat. The old
+    echo led with 0x17 zero bytes the reader 0x1405dd070 takes as two empty strings: the native chat's blank "[Party]"
+    after every line (2026-11-05)."""
     from kuf2 import world
     role = world.make(None, 0, "127.0.0.1", 0)
     s = Session()
     s.data["char"] = {"id": 1, "class": 0, "name": "Aldric"}
     role.handlers[world.C2S_CHAT](s, pkt(world.C2S_CHAT, bytes.fromhex("0b2f62626c00")))  # live 02:57: "/bbl"
-    out = bytes(s.sent[-1].buf)
+    role.handlers[world.C2S_CHAT](s, pkt(world.C2S_CHAT, b"\x04hello\x00"))
+    assert s.sent == []
+
+
+def test_a_servers_chat_line_is_the_channel_and_two_strings_as_the_reader_takes_them():
+    from kuf2 import world
+    role = world.make(None, 0, "127.0.0.1", 0)
+    s = Session()
+    s.data["char"] = {"id": 1, "class": 0, "name": "Aldric"}
+    s.data["account"] = {"id": 1}
+    role.handlers[world.C2S_CHAT](s, pkt(world.C2S_CHAT, b"\x04!win\x00"))
     assert s.sent[-1].proto == world.S2C_CHAT
-    assert out == b"\x0b" + bytes(world.CHAT_HEADER) + b"Aldric\x00/bbl\x00"
+    assert bytes(s.sent[-1].buf) == b"\x04Server\x00!win works inside a mission room that is not won yet\x00"
 
 
 def test_login_time_codec_matches_the_client_reader():
@@ -953,6 +967,7 @@ def test_hit_report_props_and_whole_troop_targets_parse():
 
 def test_a_dead_hero_revives_at_the_camp_and_the_echoes_answer():
     from kuf2 import combat
+    from kuf2.packet import Writer
     role = game.make(NoSave(), 0)
     s = FieldSession({"active": {}, "done": []})
     s.data["battle"] = combat.Battle()
@@ -961,10 +976,13 @@ def test_a_dead_hero_revives_at_the_camp_and_the_echoes_answer():
     assert bytes(s.sent[-1].buf) == struct.pack("<H", 1)                       # alive: quiet refusal
     s.data["battle"].troops[0]["hp"] = 0
     role.handlers[game.C2S_REVIVE_CAMP](s, pkt(game.C2S_REVIVE_CAMP, b""))
-    protos = [w.proto for w in s.sent[-5:]]
-    assert protos == [game.S2C_REVIVE_CAMP, game.S2C_TROOP_DOWN, game.S2C_TROOP_BACK, game.S2C_TROOP_HP,
-                      combat.S2C_STATUS_ADD]                              # the revive's invincibility 33 (5 s)
-    assert len(bytes(s.sent[-5].buf)) == 12 and bytes(s.sent[-4].buf) == bytes(5) + bytes([1]) + bytes(2)
+    protos = [w.proto for w in s.sent[-6:]]
+    assert protos == [game.S2C_REVIVE_CAMP, game.S2C_TROOP_DOWN, combat.S2C_UNIT_LIVE, game.S2C_TROOP_BACK,
+                      game.S2C_TROOP_HP, combat.S2C_STATUS_ADD]           # the revive's invincibility 33 (5 s)
+    assert len(bytes(s.sent[-6].buf)) == 12 and bytes(s.sent[-5].buf) == bytes(5) + bytes([1]) + bytes(2)
+    # his leader and unit 0 both keep the dead bit otherwise (live 2026-11-05 09:13: frozen and invisible)
+    live = Writer(combat.S2C_UNIT_LIVE).u16(0).u16(2).obool(True).raw(struct.pack("<h", combat.LEADER))
+    assert bytes(s.sent[-4].buf) == bytes(live.obool(True).raw(struct.pack("<h", 0)).buf)
     assert len(bytes(s.sent[-3].buf)) == 9
     assert struct.unpack_from("<I", bytes(s.sent[-1].buf), 10)[0] == 33
     assert s.data["battle"].troops[0]["hp"] == 1000
@@ -1258,7 +1276,9 @@ def test_battle_numbers_follow_the_hero_and_hits_show_damage():
     assert combat.S2C_DAMAGE_NUMBERS in protos and game.S2C_KILL_FEED in protos and game.S2C_COMBAT_BONUS in protos
     assert game.S2C_LEVEL_UP in protos and combat.S2C_STATS in protos and c["level"] == 2
     lv = next(w for w in s.sent if w.proto == game.S2C_LEVEL_UP)
-    assert bytes(lv.buf) == struct.pack("<H", 0) + bytes([1, 2])
+    # the hero's level rides the leader branch of 0x140d1b7d0 (flag true): it sets the leader unit and the HUD record
+    # (+0x918 +0x5c); flag false only set the troop object, live 10:00:29: troop 9, leader 8, HUD Lv.8
+    assert bytes(lv.buf) == struct.pack("<H", 0) + bytes([OBOOL_TRUE, 2])
     assert s.data["battle"].troops[0]["max"] == game.hero_stat_values(c)[0] > 402
 
 
@@ -2613,15 +2633,17 @@ def test_the_clients_force_change_ack_counts_the_troop_as_the_players():
 
 
 def test_barriers_open_with_their_force_or_when_the_hero_comes_near():
-    # G6 (owner Q4): Fort Valley 10306's collapsed walls (type 48) open as their forces wake ("They're coming through
-    # the collapsed castle walls"); its fence gate 10000 when the start force F20000 beside it is down
-    s = mission_room(10306)
-    assert not {20000, 20001, 10000} & opened(s)
-    game.wake(s, next(w for w in s.data["waves"] if w[0]["ForceNum"] == 20600), "test")
-    assert 20000 in opened(s) and 20001 not in opened(s)
-    down_all(s, [20000, 20001, 20002])
-    assert 10000 in opened(s)
-    assert game.prop_refusal(s, 10000) == "mission trigger only"   # opened, still not the player's to use
+    # G6 (owner Q4): Posterus Centre 10212's gates open as their forces wake, or when the start force beside them is
+    # down (Fort Valley 10306, which this test read until its table: tests/test_scenes_10306.py, each by its story)
+    s = mission_room(10212)
+    plan = s.data["plan"]
+    wave, force = plan["barriers"][10002][1], plan["barriers"][10001][1]
+    assert wave[0] == "wave" and force[0] == "force" and not {10001, 10002} & opened(s)
+    game.wake(s, next(w for w in s.data["waves"] if w[0]["TroopID"] == wave[1]), "test")
+    assert 10002 in opened(s) and 10001 not in opened(s)
+    down_all(s, plan["guards"][force[1]])
+    assert 10001 in opened(s)
+    assert game.prop_refusal(s, 10001) == "mission trigger only"   # opened, still not the player's to use
     # Grey Fog 10358's curtain 10532 beside F22000: open when the hero comes within 2500
     s = mission_room(10358)
     walk(s, 282374 + 3000, 182258)

@@ -216,13 +216,31 @@ def test_an_academy_level_up_pushes_0x10bd_at_the_next_levels_price():
     assert troops.tactics_price(81001, 2) == ("Gold", 580) and troops.tactics_price(70148, 1) == ("Gold", 140)
     role.handlers[troops.C2S_TACTICS_UP](ws, pkt(troops.C2S_TACTICS_UP, obf.u32(81001)))
     assert c["gold"] == 420 and troops.skill_level(c, 81001) == 2
-    assert [w.proto for w in ws.sent[-2:]] == [troops.S2C_TACTICS_UP, troops.S2C_TACTICS_ONE]
-    one = bytes(ws.sent[-1].buf)
+    assert [w.proto for w in ws.sent[-3:-1]] == [troops.S2C_TACTICS_UP, troops.S2C_TACTICS_ONE]
+    one = bytes(ws.sent[-2].buf)
     assert len(one) == 9 and obf.dec_u32(one[:4]) == 81001 and one[8] == 2
     role.handlers[troops.C2S_TACTICS_UP](ws, pkt(troops.C2S_TACTICS_UP, obf.u32(70148)))
     assert c["gold"] == 280 and troops.skill_level(c, 70148) == 1
     role.handlers[troops.C2S_TACTICS_UP](ws, pkt(troops.C2S_TACTICS_UP, obf.u32(70194)))
     assert struct.unpack_from("<h", bytes(ws.sent[-1].buf))[0] == 0x6430 and troops.skill_level(c, 70194) == 0
+
+
+def test_an_academy_level_up_answers_before_the_new_balance():
+    # live 2026-11-07 (d9_tac4): 0x1751's handler draws the window's gold as the client's balance minus the cost it kept
+    # at the send (0x14063ec90: common+0x108 - window+0x78, Cubic +0x118 - +0x80), then forgets the cost. With the new
+    # total 0x1658 first, Magical Defensive Energy's 140 came off twice: the save 144,647, the window 144,507.
+    from kuf2 import world
+    c, _ = army(1)
+    c.update(gold=1000, cubic=10)
+    role = troops_role()
+    ws = WorldSession(c)
+    for ability, balance in ((70148, world.S2C_GOLD), (70194, world.S2C_CUBIC)):    # 140 gold; 6 Cubic
+        ws.sent.clear()
+        role.handlers[troops.C2S_TACTICS_UP](ws, pkt(troops.C2S_TACTICS_UP, obf.u32(ability)))
+        sent = [w.proto for w in ws.sent]
+        assert troops.skill_level(c, ability) == 1 and sent.count(balance) == 1
+        assert sent.index(troops.S2C_TACTICS_UP) < sent.index(balance)
+    assert c["gold"] == 860 and c["cubic"] == 4
 
 
 # --- T1.11 / T5.11: passives ---

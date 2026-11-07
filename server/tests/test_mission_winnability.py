@@ -4,7 +4,7 @@ starts with something to fight, every held wave wakes, every hostile falls, and 
 fall. The audit's scratch probe (C_probe.py, row C16) made a repo test, so "winnable" is HEADLESS proof, not a probe.
 The rule is ours; a mission's own rule (a table, a boss, a clock) replaces it mission by mission. What this does not
 prove: that a spot is winnable on foot (the waves are brought down here, not walked to; the walls are not modelled).
-The tabled missions (10358, 10233, 10234, 10361, 10362, 10235, 10303 and the training camps 10331, 10345, 10347,
+The tabled missions (10358, 10233, 10234, 10361, 10362, 10235, 10303, 10306 and the training camps 10331, 10345, 10347,
 10349) are won by their tables: test_mission_playthrough."""
 import pytest
 
@@ -15,7 +15,7 @@ from conftest import run_pending
 ROUNDS = 100                    # each round downs every hostile standing; the most waves a C3 spot holds is 25 (10305)
 
 WAVE_RULE = {                   # the C3 rows (the audit's names; the Windstone / Chasm names from textspotname_eng)
-    10306: "fort-valley", 10211: "posterus-outskirts", 10212: "posterus-centre",
+    10211: "posterus-outskirts", 10212: "posterus-centre",
     10318: "steel-plain",
     10307: "green-flow", 10319: "claws-station", 10328: "forest-of-fog", 10205: "dark-veil", 10305: "stalker-forest",
     10312: "swidden-deadwood", 10323: "centre-deadwood", 10313: "shield-keep", 10309: "essex-outskirts",

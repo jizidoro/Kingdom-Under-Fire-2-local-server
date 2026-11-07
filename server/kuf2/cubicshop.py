@@ -7,7 +7,7 @@ SellIDs at the same price, CashPrice = item_currency Buy_Cubic_Shop[Index = Sell
 8 Reset Entry goods of the official notes' SN-U1 / SN-U2 lists). The client lists on the tab only what 0x3756 sends
 (goods list shop+0x30; it looks each SellID up in its own Item_Cash map for the category, 0x14184c630, and shows a good
 on tab 5 when MainCategory is COMMON, its status is not 0 and its limit not 0, list builder 0x14059a020). Real-money
-goods (Currency 1) are never listed; 0x3757, 0x112a and 0x1155 stay refused (world.EMPTY_REPLIES).
+goods (Currency 1) are never listed; 0x3757, 0x112a and 0x1155 stay refused (events.REPLIES).
 
   C2S 0x3755 (CommonSubCashShop OnEnter 0x1405937e0 -> 0x1405969a0, first open only): no body.
   S2C 0x3756 (0x140596ba0, parser 0x1405a2080 -> 0x1405a2200): obool finalize, obool reset (clears the list first),
@@ -39,8 +39,6 @@ HIDDEN = {
     "8106000": "Guild Point Potion: its item row is Availability False",
     "8107000": "Guild Badge: its item row is Availability False",
     "8122000": "Rare Grindstone Chest: item_cubic Availability False",
-    "8105000": "Guild Name Change Form: no guild offline",
-    "8128000": "Camp Change Ticket: the realm transfer is refused offline (census Q1)",
     "8102000": "Silver Booster Pack (MEMBERSHIP_ITEM): VIP / membership is live service (census header)",
     "8103000": "Gold Booster Pack (MEMBERSHIP_ITEM): as above",
     "8126000": "Character Slot Expansion (CHARSLOT_EXPAND): not built offline",

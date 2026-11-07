@@ -9,7 +9,7 @@ else a token item held in the bag; inferred from the client's currency display).
   S2C 0x154d Process_ResSaleList (0x140633a50): i16; 0 -> u32 free refreshes, u32 menu type, u16 n, n * (coded u32
       item, u8 index, obool sold, coded u16 count); a success shorter than 10 bytes crashes.
   C2S 0x154e SendPacket_ReqBuy (0x140633690): u8 index, u32 menu type, u32 NPC id.
-  S2C 0x154f Process_ResBuy (0x140633e20): i16; 0 -> the entry (8 bytes, sold set); 0x447 bag full, 0x643b failed.
+  S2C 0x154f Process_ResBuy (0x140633e20): i16; 0 -> the entry (8 bytes, sold set); 0x447 text 7623, 0x643b failed.
   C2S 0x1550 free refresh (0x140632f70): u32 menu type.   S2C 0x1551: i16; 0 -> the client asks 0x154c again;
       0x643a -> refreshing off.
   C2S 0x1552 paid refresh ("CubicRefresh" 0x140631882, after box 0xd0a7; the client priced it at item_currency
@@ -29,7 +29,7 @@ C2S_REFRESH, S2C_REFRESH = 0x1550, 0x1551
 C2S_PAID_REFRESH, S2C_PAID_REFRESH = 0x1552, 0x1553
 BUY_FAILED = 0x643b
 NO_REFRESH = 0x643a
-BAG_FULL = 0x447
+BAG_FULL = 0x447                    # its text is 7623, the item-lock line; the handler names no bag-full code (ours)
 MENUS = {18: "STORE_PVP", 19: "STORE_COIN", 55: "STORE_COIN2", 59: "STORE_RARE_TROOP_COIN", 65: "STORE_COIN3"}
 
 

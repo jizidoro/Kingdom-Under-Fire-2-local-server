@@ -11,10 +11,10 @@ from test_battle import NoSave, acts, mission_room, pkt, walk
 TABLES = sorted(int(p.stem[1:]) for p in (pathlib.Path(director.__file__).parent / "scenes").glob("m*.py"))
 TRIGGERS = {"start": (), "bound": ("bound",), "wake": ("force",), "down": (), "hp": ("below",), "won": (), "closed": (),
             "after": ("step",), "engage": ("force",), "left": ("force", "count"), "skill": ("troop", "force"),
-            "cond": ("cond",), "prompt": ("keys",), "finish": ("troop",), "broken": ("prop",),
+            "cond": ("cond",), "prompt": ("keys",), "finish": ("troop",), "broken": ("prop",), "used": ("prop",),
             "arrive": ("force", "bound"), "near": ("troop",)}
 ACTIONS = {"say": (3, 4), "wake": (2, 14), "move": (3, 4), "open": (2, 2), "heal": (1, 2), "win": (1, 1),
-           "leave": (2, 2), "tutorial": (2, 2), "cutscene": (3, 3), "march": (3, 3),
+           "leave": (2, 2), "tutorial": (2, 2), "cutscene": (3, 3), "march": (3, 3), "march straight": (3, 3), "march line": (3, 3), "march past": (3, 3), "march one": (3, 3),
            "notice": (2, 3), "panel": (3, 3), "gauge": (4, 4), "done": (2, 2), "count": (4, 4), "state": (2, 2), "finish": (1, 1),
            "escort": (2, 9), "hand": (2, 2), "complete": (1, 1), "shoot": (3, 3), "spawn": (2, 14), "point": (2, 2), "highlight": (2, 3),
            "highlight troop": (2, 4), "fade": (4, 4), "move deck": (3, 4), "camera troop": (3, 3),
@@ -105,7 +105,7 @@ def test_every_table_names_real_bounds_lines_forces_and_troops(spot):
             assert of(st["force"], forces), st
         if st["on"] == "arrive":
             assert director.bound(spot, st["bound"]) is not None, st
-        if st["on"] == "broken":
+        if st["on"] in ("broken", "used"):
             assert of(st["prop"], props), st
         if st.get("in") is not None:                    # a prompt counted only in that bound
             assert st["on"] == "prompt" and director.bound(spot, st["in"]) is not None, st
@@ -312,11 +312,23 @@ def test_the_sorcerer_lets_the_wolves_loose_at_half_hp():
 
 
 def test_a_mission_without_a_table_runs_as_before():
-    # Fort Valley 10306 (no scenes/m10306.py): no line, and the victory window at once
-    assert director.script(10306) == ()
-    s = mission_room(10306)
+    # Steel Plain 10318 (no scenes/m10318.py): no line, and the victory window at once
+    assert director.script(10318) == ()
+    s = mission_room(10318)
     game.mission_won(s, NoSave())
     assert not lines_shown(s) and any(w.proto == game.S2C_MISSION_COMPLETE for w in s.sent)
+
+
+def test_a_step_of_a_difficulty_is_for_a_room_of_it_alone():
+    # Fort Valley's Ukuron and right wall: on the Hard tape only, in forces the zone does not mark for Hard
+    normal, hard = mission_room(10306, 0), mission_room(10306, 1)
+    assert director.for_hero(normal, {"on": "down"}) and director.for_hero(hard, {"on": "down"})
+    assert director.for_hero(normal, {"on": "down", "difficulty": 0})
+    assert not director.for_hero(hard, {"on": "down", "difficulty": 0})
+    assert director.for_hero(hard, {"on": "down", "difficulty": 1})
+    assert not director.for_hero(normal, {"on": "down", "difficulty": 1})
+    ids = lambda s: [st.get("id") for _, st in director._pending(s, "down") if st.get("force") == 20100]
+    assert ids(normal) == ["gate 2"] and ids(hard) == ["ukuron"]
 
 
 def sync_body(records):

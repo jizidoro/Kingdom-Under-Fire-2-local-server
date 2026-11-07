@@ -18,7 +18,7 @@ Messages (client build 4766023):
 - S2C 0x505d troop hp (0x140d17a30), S2C 0x505b unit live/dead (Packet_TroopMemberLiveInfo 0x140d17100):
   u16 uid, u16 n, n * (obool alive, i16 unit index).
 """
-import functools, random, struct, time
+import functools, math, random, struct, time
 
 from .net import log
 from . import net, obf
@@ -55,6 +55,10 @@ S2C_HERO_DAMAGE = 0x507d       # the number over the controlled hero (0x140c6189
 # "Evasion", "Defence", "Miss", "Critical" (textflashui_eng). The tape shows the words over enemies (white) and over the
 # hero (red): Critical 185 reads, Miss 94, Defence 8 (playthrough CATALOGUE; captures/video OCR, 2026-09-30).
 FLAG_CRITICAL, FLAG_MISS, FLAG_GUARD, FLAG_DODGE = 1, 2, 4, 8
+NUMBERS_RANGE = 6000           # ours: how near the hero another troop's hit shows its number. 0x507b's consumer
+                               # (0x140c63760) keeps the 50 nearest records and draws each where its unit projects,
+                               # however far, so a multiplayer server's sight range must have bounded them (not shipped,
+                               # so the figure is ours: game.WAKE_RANGE's). The crash site, 2026-11-05 08:18.
 S2C_DAMAGE_TALLY = 0x507c      # UiInGame::PlayTroopDamage (0x140d1c930): u16 n, n x (split HP value damage, u16 victim,
                                # u16 attacker): the tactical view's troop-icon tally (pushes_battle.md; BATTLE B15)
 C2S_AREA_DAMAGE = 0x505a       # EventDamageRange / RangeDirect / Charge (builder 0x1405423d0): coded u16 source troop,
@@ -808,7 +812,36 @@ def charge_attack(att):
     return {"type": att["engage"], "pr": att["default_pr"] * att["charge_pr"] * (rev if rev > 0 else 1.0), "ar": 1.0}
 
 
-def ability_attack(att, ability, level=1, k=1):
+@functools.cache
+def _charge_rows():
+    from . import tables
+    return {(r["AbilityId"], r["Level"]): r for r in tables.sections("abilitytypeinfo")["Charge"]}
+
+
+def charge_stage(ability, level, stage):
+    """What a charged skill's stage changes (abilitytypeinfo %Charge: 39 hero skills, up to ChargeLevel stages a
+    level): its own ProcessRate list, AttributeValue, AttributeOperation and status slots; None for a skill with no
+    row or a cast released before its first stage (stage 0: the plain abilitycastinfo row). The stage is the count of
+    0x5062 the cast sent (on_charge_step), capped at ChargeLevel. Its MaxTarget is the client's (it lists the targets).
+    statuses: the stage's StatusEffect<n>, Level<n>, StatusEffectObject<n>, StatusEffectTimesType<n>, Probability<n> and
+    their _2 columns, under the plain row's names: status.ability_statuses puts them in place of the plain row's slots,
+    an empty one too (ours [I]: 266 of the 297 stages restate the plain row; the Rain of Arrows family rises, 956's 6413
+    from level 1 to 3 and 5, and 1297's stage 1 has no 3391). Its ProcessStatusEffect<n> is not read: on every stage
+    with a status it is the plain row's."""
+    row = _charge_rows().get((str(ability), str(level))) or _charge_rows().get((str(ability), "1"))
+    if row is None or stage < 1:
+        return None
+    n = min(int(stage), int(_f(row.get("ChargeLevel")) or 1))
+    shares = [_f(x) for x in str(row.get(f"ProcessRate{n}", "")).split() if x.replace(".", "").isdigit()]
+    value = row.get(f"AttributeValue{n}", "-")
+    op = row.get(f"AttributeOperation{n}", "-")
+    slots = {f"{column}{slot}": row.get(f"{column}{n}{tail}") for slot, tail in ((1, ""), (2, "_2"))
+             for column in ("StatusEffect", "Level", "StatusEffectObject", "StatusEffectTimesType", "Probability")}
+    return {"shares": shares, "value": None if value in ("", "-") else _f(value),
+            "op": None if op in ("", "-", "NOOP") else op, "statuses": slots}
+
+
+def ability_attack(att, ability, level=1, k=1, stage=0):
     """The k-th execute (0x5066) of a cast of `ability` at `level` by att: abilitycastinfo %Improvement AttributeRate /
     1000 x ProcessRate_k / 100 (ours: past the list the last one counts); when every ProcessRate x 10 restates
     AttributeRate (the basic combos 164-167: 1000 / "100 100") AttributeRate / 1000 alone. AttributeValue >=
@@ -822,12 +855,18 @@ def ability_attack(att, ability, level=1, k=1):
         return hit_attack(att)
     rate, value = _f(row.get("AttributeRate")), _f(row.get("AttributeValue"))
     shares = [_f(x) for x in str(row.get("ProcessRate", "")).split() if x.replace(".", "").isdigit()] or [100.0]
+    op = row.get("AttributeOperation")
+    charged = charge_stage(ability, level, stage)        # a charged skill past its first stage: that stage's own
+    if charged:                                          # shares, value and operation (0x5062, on_charge_step)
+        shares = charged["shares"] or shares
+        value = value if charged["value"] is None else charged["value"]
+        op = charged["op"] or op
     restated = rate > 0 and all(abs(x * 10 - rate) < 1e-6 for x in shares)
     share = 1.0 if restated else shares[min(k, len(shares)) - 1] / 100
     circle = row.get("AttributeCircle", "-")
     return {"type": att["plain"] if circle in ("", "-") else circle,
             "pr": 1.0 if att.get("hero") else att["default_pr"], "ar": rate / 1000 * share, "flat": 0.0 if value >= INSTANT_KILL else value * share,
-            "kill": value >= INSTANT_KILL, "op": row.get("AttributeOperation"), "ability": ability, "level": level,
+            "kill": value >= INSTANT_KILL, "op": op, "ability": ability, "level": level,
             "add_prob": _f(row.get("Add_CriticalProb")), "add_dmg": _f(row.get("Add_CriticalDmg")),
             "add_acc": _f(row.get("Add_Accuracy")), "add_pen": _f(row.get("Add_Panetrate")),
             "crit_rate": basic_attack_crit(ability) if att.get("hero") else 0.0,
@@ -981,7 +1020,7 @@ def resolve_hit(att, tgt, attack, held=(), hp_ratio=1.0, rng=None, state=IDLE, o
     race rates (race_factor), a skill group's rate (skill_rate_factor) and the target's absorption (absorbed) join the
     product; a "dot" attack (a damage-over-time tick, a reflection) rolls neither the miss nor the crit; a "fixed" one
     (an ability's HP trait) is its amount."""
-    if att is None or attack is None:
+    if att is None or attack is None or att.get("harmless"):      # harmless: a force that fires for show (director.harmless)
         return 0, 0
     rng = rng or random
     levels = dict(held) if isinstance(held, dict) else dict.fromkeys(held, 1)
@@ -2059,7 +2098,8 @@ def on_ability_execute(s, pkt, send_troop_hp=None, on_down=None, on_props=None):
     if finishing:
         statuses.on_execute(s, serial, ability, own, targets, send_troop_hp, on_down)
     if send_troop_hp is not None:                       # the hit first: a status the cast puts on (86, the aimed
-        apply_ability(s, own, ability, k, targets, send_troop_hp, on_down)  # shot's mark) counts from its next hit
+        apply_ability(s, own, ability, k, targets, send_troop_hp, on_down,  # shot's mark) counts from its next hit
+                      stage=s.data.get("charge", {}).get(serial, 0))        # a charged skill's stage (on_charge_step)
     if not finishing:
         statuses.on_execute(s, serial, ability, own, targets, send_troop_hp, on_down)   # the statuses by the execute's
                                                         # ProcessStatusEffect; removals and the execution once a cast
@@ -2080,7 +2120,7 @@ def caster_record(battle, uid, ability):
     return own
 
 
-def apply_ability(s, caster, ability, k, targets, send_troop_hp, on_down=None):
+def apply_ability(s, caster, ability, k, targets, send_troop_hp, on_down=None, stage=0):
     """The k-th execute of caster's cast of ability on [(troop uid, [unit index])] (ability_attack with the caster's
     record, caster_record: a leader's skill strikes with the leader's; the hero's level from the kit, an NP caster's
     from its record's %Skill list, else 1). A SUBTRACT ability (or an unknown one: the plain hit) damages the listed
@@ -2092,7 +2132,7 @@ def apply_ability(s, caster, ability, k, targets, send_troop_hp, on_down=None):
     targets = [_whole(battle, uid, units) for uid, units in targets]
     att = caster_record(battle, caster, ability)
     level = s.data.get("kit", {}).get(ability, 1) if caster == 0 else (att or {}).get("skills", {}).get(ability, 1)
-    attack = ability_attack(att, ability, level, k)
+    attack = ability_attack(att, ability, level, k, stage)
     if attack is not None and attack.get("ability") is not None:          # the units the execute struck, the hero's
         attack = dict(attack, struck=sum(len(e[1]) for e in targets),              # Stack2 (A8)
                       stack2=(s.data.get("pools") or {}).get("stack2", 0) if caster == 0 else 0)
@@ -2111,6 +2151,9 @@ def apply_ability(s, caster, ability, k, targets, send_troop_hp, on_down=None):
         hp_traits(s, caster, ability, level, k, [e[0] for e in targets], mate, att, send_troop_hp, on_down)
         if k == 1:
             reinforce(s, ability, level, [e[0] for e in targets if mate(e[0])], send_troop_hp)
+    from . import director
+    for e in targets:                                   # a cast on a place names no target (0xffff), its executes do:
+        director.on_skill(s, caster, e[0], ability)     # Flamegrass' Blizzard on the column
 
 
 def _unit_parts(t, target):
@@ -2336,13 +2379,28 @@ def heal_troop(s, uid):
     return True
 
 
+C2S_CHARGE_STEP = 0x5062       # AbilityCast::_IncreaseChargeStep 0x140c20740 (builder 0x1404fb9a0): u16 cast serial, one
+                               # per charge stage reached; no other request of the cast names the stage
+
+
+def on_charge_step(s, pkt):
+    """A charged skill reached its next stage: counted per cast serial for the cast's executes (charge_stage). No
+    reply: 0x5063 does nothing for the caster's own troop. Never seen live (no cast has passed stage 0)."""
+    b = pkt.rest()
+    if len(b) < 2:
+        return
+    serial = struct.unpack_from("<H", b, 0)[0]
+    steps = s.data.setdefault("charge", {})
+    steps[serial] = steps.get(serial, 0) + 1
+
+
 def on_cast_done(s, pkt):
     b = pkt.rest()
     if len(b) < 2:
         log.warning("cast done too short: %s", b.hex())
         return
     serial = struct.unpack_from("<H", b, 0)[0]
-    for key in ("casts", "cast_ability", "executes", "cast_runs"):  # the cast's record, ability, executes go
+    for key in ("casts", "cast_ability", "executes", "cast_runs", "charge"):  # the cast's record, ability, executes go
         s.data.get(key, {}).pop(serial, None)
     s.send(Writer(S2C_CAST_DONE).u16(0).u16(0).u16(serial))
 
@@ -2685,6 +2743,12 @@ def on_field_return(s, pkt):
     net.journal("forced_return", spot=s.data.get("spot"), troop=uid)
 
 
+def in_sight(s, uid):
+    """Whether troop `uid` is within NUMBERS_RANGE of the hero; a place not reported yet counts as near."""
+    here, there = s.data.get("hero_pos"), s.data.get("last_pos", {}).get(uid)
+    return not here or not there or math.hypot(here[0] - there[0], here[2] - there[2]) <= NUMBERS_RANGE
+
+
 def apply_hits(s, targets, send_troop_hp, on_down=None, attacker=None, attack=None, record=None, kinds=None):
     """Hits on [(troop uid, [unit index][, scale])] by troop `attacker` with `attack` (hit_attack / ability_attack /
     charge_attack; scale multiplies its AR, 0x505a's ratio): each unit's amount and damage words from resolve_hit (the
@@ -2807,6 +2871,7 @@ def apply_hits(s, targets, send_troop_hp, on_down=None, attacker=None, attack=No
         gain_stacks(s, "attack")                        # the runes, rampage: once for a hit report that landed
         from . import procs
         procs.roll(s, "EACH_ATTACK", next(uid for uid, _ in tally if uid != 0))
+    numbers = [n for n in numbers if mine or in_sight(s, n[0])]
     if numbers:
         w = Writer(S2C_DAMAGE_NUMBERS).u8(0).u16(len(numbers))
         for uid, hits in numbers:

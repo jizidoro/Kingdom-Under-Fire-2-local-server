@@ -17,7 +17,7 @@ Ours: the lines with each lesson, paired by their words from the missiontext's 5
 "Captain" lines are Sanchez's, the aide who calls the hero Captain; 511050, 511100 are Jager's: "Archers! Concentrate
 fire", "I lost"); the panel, the 500700 block the same set belongs to ("Troop Control Tutorial", "Jager's Troop
 eliminated"), not the 700 block game.mission_text picks by the title both share; the mock battle (the held forces
-F21000 / F22000 and their allies, game.mission_plan G4) once the troops reach 유저이동지역 ("the user's move area",
+F21000 / F22000 and their allies, game.mission_plan G4) once the troops reach the map's strip 12100 (LINE below;
 511062 "Move your Troops to the highlighted location"); the three troops the lessons command (F1-F3: PC_Troop_1-3,
 11000 / 11107 / 11104; G5 took PC_Troop_4 too). The win is the rule's: every hostile down, Jager's F20000 on the
 other side (511021) with the mock battle's."""
@@ -28,6 +28,10 @@ from ..director import (COND_TUTORIAL_PAST as TUTORIAL_PAST, KEY_AI_DEFENSIVE, K
 SANCHEZ, JAGER = "산체스", "예거"     # 14000, 14001 (both active in the zone)
 HAND = (11000, 11107, 11104)         # PC_Troop_1, PC_Troop_2, PC_Troop_3
 HOLD = {21000, 22000}                # the mock battle's two forces
+# Where the troops regroup, ours [I]: the strip with the three stands 12000-12002 along it, across the field from the
+# mock battle's lines at x 43,000. 유저이동지역 ("the user's move area"), by Sanchez's seat, is ground the client refuses
+# a troop ("Cannot move to that area." three times, live 2026-11-06 10:53): sent there the camp could not go on.
+LINE = "12100"
 PANEL = (500700, ((500710, (500720, 500721)), (500730, (500740,))))
 
 # (the step before, the lines, the pop-up, the page its key waits past, the keys, the id): 1_Tab's order
@@ -63,8 +67,8 @@ STEPS = [
     *(st for les in LESSONS for st in lesson(*les)),
     # W-17: the move keys free; the lessons are complete; the troops to the highlighted place
     {"on": "after", "step": "regroup", "s": 0, "id": "move", "do": [
-        ("done", 500720), ("say", SANCHEZ, 511062), ("point", "유저이동지역")]},
-    {"on": "bound", "bound": "유저이동지역", "needs": "move", "do": [
+        ("done", 500720), ("say", SANCHEZ, 511062), ("point", LINE)]},
+    {"on": "bound", "bound": LINE, "needs": "move", "do": [
         ("wake", 21000, 22000), ("say", SANCHEZ, 511070), ("say", SANCHEZ, 511071)]},
     {"on": "won", "do": [("done", 500721), ("say", JAGER, 511100)]},
 ]

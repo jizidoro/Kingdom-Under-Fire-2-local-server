@@ -59,11 +59,13 @@ def materials(r, count):
             if r[f"Material_{k}"].isdigit()]
 
 
-def cost(r, level, count):
+def cost(r, level, count, off=0):
     """The craft's gold: ceil(Gold x count x %CraftLevelUP Gold_Rate / 1000), the price the recipe menu shows and checks
     the bag's gold against (ContentDetail SetItemDetailInfo_Req / SetCraftCountInfo: Math.ceil(cost *
-    g_nCraftGoldDecRate / DEFAULT_CRAFT_RATE 1000); rules census ECONOMY G2)."""
-    rate = next((int(x["Gold_Rate"]) for x in level_rows() if x["Level"] == str(level)), 1000)
+    g_nCraftGoldDecRate / DEFAULT_CRAFT_RATE 1000); rules census ECONOMY G2). `off` is what the guild's
+    MakeCost_Discount takes off the rate, per mille (guild.make_rate_off: the window is handed Gold_Rate - 10 x the
+    skill's percent as g_nCraftGoldDecRate, 0x1405b1c49)."""
+    rate = next((int(x["Gold_Rate"]) for x in level_rows() if x["Level"] == str(level)), 1000) - off
     return -(-int(r["Gold"]) * count * rate // 1000)
 
 
@@ -148,11 +150,13 @@ def make(role, state):
         r = recipe(code)
         g = GROUPS.index(r["CraftGroup"]) if r and r["CraftGroup"] in GROUPS else None
         need = materials(r, count) if r else []
+        from . import guild
+        off = guild.make_rate_off(c)                # the guild's MakeCost_Discount, off the level's Gold_Rate
         why = ("no recipe" if g is None else "a craft is running" if str(g) in cr["running"] else
                "count" if not 1 <= count <= 999 else
                "hero level" if c.get("level", 1) < int(r["ReqHeroLevel"]) else
                "craft level" if cr["level"][g] < int(r["ReqCraftLevel"]) else
-               "gold" if c.get("gold", 0) < cost(r, cr["level"][g], count) else
+               "gold" if c.get("gold", 0) < cost(r, cr["level"][g], count, off) else
                "materials" if any(sum(i["count"] for i in c.get("bag", []) if i["code"] == m) < n for m, n in need)
                else None)
         if why:
@@ -161,8 +165,9 @@ def make(role, state):
             return
         for m, n in need:
             world.remove_item(s, state, m, n)
-        world.add_gold(s, state, -cost(r, cr["level"][g], count))
-        cr["running"][str(g)] = {"recipe": code, "count": count, "uid": None}
+        paid = cost(r, cr["level"][g], count, off)
+        world.add_gold(s, state, -paid)
+        cr["running"][str(g)] = {"recipe": code, "count": count, "uid": None, "gold": paid}  # what a cancel returns
         state.save()
         s.send(Writer(S2C_START).u16(0).i32(count).raw(obf.u32(code)))
         log.info("craft %d x%d started (group %s)", code, count, GROUPS[g])
@@ -228,6 +233,6 @@ def make(role, state):
             r = recipe(code)
             for m, n in materials(r, run["count"]):           # the client shows no loss: refunded (inferred)
                 world.add_item(s, state, m, n, capped=False)
-            world.add_gold(s, state, cost(r, cr["level"][int(key)], run["count"]))
+            world.add_gold(s, state, run.get("gold", cost(r, cr["level"][int(key)], run["count"])))   # as paid
             state.save()
         s.send(Writer(S2C_CANCEL).u16(0))

@@ -15,7 +15,7 @@ the .py table when that file exists.
     Step("select hero", On.Cond{cond = {Cond.TutorialPast, "133_SelectHero", 1}, needs = "lesson1"})
 
 Step([id,] trigger[, body]): no id, a step no other names; no body, a step that only gates others. Mission{...}: the
-table's settings (HOLD, ESCORT, HAND, HAND_LATER, HOLD_PROPS, PANEL, WIN, NEXT; SETTINGS). Values: numbers (decimal, 0x
+table's settings (HOLD, LATE_ALLIES, ESCORT, HAND, HAND_LATER, HOLD_PROPS, PANEL, WIN, NEXT; SETTINGS). Values: numbers (decimal, 0x
 hex, a leading -), strings ("..." or '...', Lua's escapes; UTF-8), true / false / nil, {a, b} (a tuple), the aliases,
 InputEvent.KEY_* (the client's InputEvent names) and Cond.TutorialPast. A parse error names the file, line and column.
 
@@ -38,6 +38,10 @@ ACTIONS = {
     "spawn": ("RTS.Troop_EnableTroop", CUTSCENE, 1, None),
     "leave": ("RTS.Troop_DisableTroop", CUTSCENE, 1, 1),
     "march": ("RTS.Troop_MoveToArea", CUTSCENE, 2, 2),
+    "march straight": ("RTS.Troop_MoveToAreaIgnoringPolyline", HANDLER, 2, 2),
+    "march line": ("Ours.MarchLine", OURS, 2, 2),                  # RTS.Troop_MoveToArea with goal 1
+    "march past": ("Ours.MarchPast", OURS, 2, 2),                  # RTS.Troop_MoveToArea with engage 0
+    "march one": ("Ours.MarchOne", OURS, 2, 2),                    # the same, the force's first still standing
     "move": ("RTS.Troop_SetTroopPosition", CUTSCENE, 2, 3),        # (troop, bound[, {dx, dz}]): the game's is
     "move deck": ("Ours.PlaceDeckTroop", OURS, 2, 3),           # optional owned actor at a scene's troop mark
     "shoot": ("RTS.Troop_RangeAttack", CUTSCENE, 2, 2),            # (troop, area); the offset is ours
@@ -87,14 +91,16 @@ TRIGGERS = {
     "prompt": ("Key", (("keys", "keys", True), ("in", "within", False))),    # "in" is a Lua keyword
     "finish": ("Finish", (("troop", "troop", True),)),
     "broken": ("Broken", (("prop", "prop", True),)),
+    "used": ("Used", (("prop", "prop", True),)),
     "arrive": ("Arrive", (("force", "force", True), ("bound", "area", True))),
     "near": ("Near", (("troop", "troop", True),)),
 }
 EVERY = (("needs", "needs", False), ("repeat", "repeats", False),      # fields of any trigger
          ("class", "class", False),                                      # (the hero's class only: m50116)
+         ("difficulty", "difficulty", False),                            # (one difficulty only: m10306)
          ("unless", "unless", False))                                    # (a branch not taken: m10303)
 # a table's settings (director.mission), in the order printed: module name -> (Mission{} field, kind)
-SETTINGS = {"HOLD": ("hold", set), "ESCORT": ("escort", set), "HAND": ("hand", tuple),
+SETTINGS = {"HOLD": ("hold", set), "HARMLESS": ("harmless", set), "LATE_ALLIES": ("late_allies", set), "ESCORT": ("escort", set), "HAND": ("hand", tuple),
             "HAND_LATER": ("hand_later", set), "HOLD_PROPS": ("hold_props", set), "PANEL": ("panel", "panel"),
             "WIN": ("win", str), "NEXT": ("next", int)}
 # InputEvent names (the client's enum, re/input_events.txt: value = its line) of the keys the director prompts

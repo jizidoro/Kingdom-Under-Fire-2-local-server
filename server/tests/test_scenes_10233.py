@@ -476,7 +476,7 @@ def test_the_tower_is_won_when_golden_hammers_cannons_arrive():
     assert 35001 not in s.data["zone_troops"]
     assert {16100, 16104, 46100, 46104} <= set(s.data["zone_troops"])
     gone = [a[2] for a in acts(s, game.ACT_ENABLE_TROOP) if a[3] == 0]
-    assert gone == [40001, 40002] and {40001, 40002} <= s.data["down"]
+    assert set(gone) == {40001, 40002} and {40001, 40002} <= s.data["down"]     # again after each later enable-all
 
 
 def test_the_wyrms_fall_to_volleys_not_to_a_skill_cast():

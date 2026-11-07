@@ -189,6 +189,10 @@ class Session:
         finally:
             handling = None
             journal("conn", role=self.role, ev="close", spot=self.data.get("spot"))
+            rooms = getattr(self.state, "game_sessions", {})    # a closed room is no room: every world reader sends on
+            account = (self.data.get("account") or {}).get("id")   # it, and 0x4040's exit pops nothing (2026-11-06: a
+            if rooms.get(account) is self:                      # level-up in town wrote here and killed the world link);
+                del rooms[account]                              # a room change's next login already holds the entry
             self.trace.close()
             self.w.close()
 

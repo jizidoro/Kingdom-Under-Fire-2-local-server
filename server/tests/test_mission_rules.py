@@ -466,6 +466,7 @@ def test_the_death_penalty_counts_each_wipe_of_a_deck_troop():
     b = s.data["battle"]
     enemy = next(u for u, t in b.troops.items() if u >= 10000 and t.get("c") and t["c"]["team"] != 0
                  and t["c"]["branch"] != "PROP")
+    b.troops[enemy]["c"] = combat.np_combatant(135170)      # the room's first enemies fire for show (HARMLESS)
     body = lambda: (hit_header(troop=enemy) + struct.pack("<H", 1) + enc_uid(1) + struct.pack("<H", 10)
                     + b"".join(bytes([0, 0, 0, 0, k + 3, 0]) for k in range(10)) + struct.pack("<H", 0))
     for _ in range(2000):
@@ -569,6 +570,7 @@ def wiped_deck_troop(spot=10235, cubic=0):
     b = s.data["battle"]
     enemy = next(u for u, t in b.troops.items() if u >= 10000 and t.get("c") and t["c"]["team"] != 0
                  and t["c"]["branch"] != "PROP")
+    b.troops[enemy]["c"] = combat.np_combatant(135170)      # the room's first enemies fire for show (HARMLESS)
     body = lambda: (hit_header(troop=enemy) + struct.pack("<H", 1) + enc_uid(1) + struct.pack("<H", 10)
                     + b"".join(bytes([0, 0, 0, 0, k + 3, 0]) for k in range(10)) + struct.pack("<H", 0))
     for _ in range(2000):

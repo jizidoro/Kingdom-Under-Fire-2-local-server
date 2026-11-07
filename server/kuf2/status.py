@@ -578,10 +578,26 @@ def cast_level(s, ability, caster):
 
 # --- an ability's execute (K2, K3, K8) ---
 
-def ability_statuses(ability, level=1):
+@functools.cache
+def _troop_procs():
+    return {(r["Id"], r.get("Level")): (int(r["ParamValue3"]), int(num(r.get("ParamValue4"), 1)),
+                                        num(str(r.get("ParamValue2", "100")).rstrip("%"), 100))
+            for r in tables.sections("statuseffectinfo")["Function"] if r.get("FunctionType") == "TROOP_PROCSKILL"}
+
+
+def troop_proc(status, level=1):
+    """(ability, its level, chance in %) of a status's TROOP_PROCSKILL function, else None."""
+    return _troop_procs().get((str(status), str(level)))
+
+
+def ability_statuses(ability, level=1, stage=0):
     """[(status, level, object, times type, probability, target branch, target race)] of an ability's two status slots
-    at a level (abilitycastinfo %Improvement, COMMON)."""
+    at a level (abilitycastinfo %Improvement, COMMON); of a cast charged to `stage`, the stage's own slots
+    (combat.charge_stage) with the plain row's branch and race (%Charge has no such columns)."""
     row = cast_row(ability, level) or {}
+    charged = combat.charge_stage(ability, level, stage)
+    if charged:
+        row = {**row, **charged["statuses"]}
     out = []
     for i in (1, 2):
         sid = str(row.get(f"StatusEffect{i}", "-"))
@@ -592,14 +608,15 @@ def ability_statuses(ability, level=1):
     return out
 
 
-def cast_statuses(s, ability, level, caster, others, first=True):
+def cast_statuses(s, ability, level, caster, others, first=True, stage=0):
     """The statuses one execute of a cast puts: SELF on the caster, ENEMY on the listed troops of the other side, ALLY
     on the caster and the listed troops of its side, each rolled by its Probability and filtered by its TargetBranch /
     TargetRace; ONCE-type slots only on the first execute. On the hero's first execute also the CHECKSKILL statuses and
-    the reload chain step (combat.checkskill_statuses, combat.chain_statuses). One 0x5074 per status."""
+    the reload chain step (combat.checkskill_statuses, combat.chain_statuses). One 0x5074 per status. stage: the charge
+    stage the cast reached (ability_statuses)."""
     mine = side(s, caster)
     plan = {}
-    for st, lv, obj, times, prob, branch, race in ability_statuses(ability, level):
+    for st, lv, obj, times, prob, branch, race in ability_statuses(ability, level, stage):
         if (times in ONCE and not first) or ground(st):
             continue
         if obj == "SELF":
@@ -665,10 +682,12 @@ def on_execute(s, serial, ability, caster, targets, send_troop_hp=None, on_down=
         for uid in [caster] + others:
             remove_groups(s, uid, gone)
     if process_flag(row, k):                        # the statuses: the executes ProcessStatusEffect marks (F3)
-        cast_statuses(s, ability, level, caster, others, not run.get("put"))
+        cast_statuses(s, ability, level, caster, others, not run.get("put"), s.data.get("charge", {}).get(serial, 0))
         run["put"] = True
     if not first:
         return
+    from . import procs
+    procs.troop_shot(s, caster, ability, level, others)
     for p in adds:
         if str(p[0]).isdigit():
             apply(s, finishing, int(p[0]), num(p[1], 1), caster)
@@ -939,12 +958,14 @@ def room_start(s):
     blessing(s)
     c = _hero_char(s)
     if c is not None:
-        from . import troops
+        from . import guild, troops
         worn = troops.set_effect(c)             # the main deck's troop set status (T1.10), held
         for uid, t in sorted((s.data.get("deck") or {}).items()):
             troop_passives(s, uid, troops.passives(c, t))
             if worn:
                 apply(s, [uid], worn[0], worn[1], uid)
+            for st, lv in guild.troop_statuses(c, t["id"]):     # the guild's learned troop skills, held the same way
+                apply(s, [uid], st, lv, uid)
     resume(s)
 
 
@@ -1017,11 +1038,13 @@ def troop_revived(s, uid):
     c = _hero_char(s)
     t = (s.data.get("deck") or {}).get(uid)
     if c is not None and t is not None:
-        from . import troops
+        from . import guild, troops
         troop_passives(s, uid, troops.passives(c, t))
         worn = troops.set_effect(c)
         if worn:
             apply(s, [uid], worn[0], worn[1], uid)
+        for st, lv in guild.troop_statuses(c, t["id"]):         # the guild's learned troop skills come back too
+            apply(s, [uid], st, lv, uid)
     revive_invincible(s, uid)
 
 

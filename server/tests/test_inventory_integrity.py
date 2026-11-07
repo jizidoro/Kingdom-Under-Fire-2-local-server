@@ -64,6 +64,14 @@ def test_shop_purchase_updates_gold_then_every_changed_slot(role, existing):
     assert sum(w.proto == world.S2C_CARGO for w in s.sent) == 1
 
 
+def test_a_full_bag_gets_the_code_whose_text_says_so(role):
+    s = Session()
+    c = s.data["char"]
+    c.update(gold=1000, bag_slots=1, bag=[item(760000030, 0, 11, 1)])      # another item holds the only slot
+    call(role, s, world.C2S_STORE_BUY, obf.u16(1) + struct.pack("<II", 0, 103) + obf.u16(2) + b"\0")
+    assert struct.unpack_from("<H", last(s, world.S2C_STORE_BUY))[0] == 0x6403 and c["gold"] == 1000
+
+
 def test_token_purchase_refreshes_payment_slots_and_reward_before_snapshot(role):
     s = Session()
     c = s.data["char"]
@@ -180,6 +188,23 @@ def test_storage_roundtrip_uses_costume_tab_and_keeps_expiry(role):
     call(role, s, world.C2S_WAREHOUSE_TO_BAG, transfer(11, 0, 0x100))
     assert last(s, world.S2C_WAREHOUSE_TO_BAG) == bytes(2)
     assert c["bag"] == original and c["warehouse"] == []
+
+
+def test_storage_moves_redraw_the_open_bag_slot(role):
+    # live 2026-11-07 (d8_wh4): the potions dragged into storage showed there, and the open bag kept drawing them at
+    # slot 23 until it was reopened; 0x1656 does not redraw an open bag, 0x1657 does (defect 9).
+    s = Session()
+    c = s.data["char"]
+    c["bag"] = [item(slot=23, count=9)]
+    call(role, s, world.C2S_BAG_TO_WAREHOUSE, transfer(11, 23, 0, count=9))
+    ids = [w.proto for w in s.sent]
+    assert ids.index(world.S2C_BAG_TO_WAREHOUSE) < ids.index(world.S2C_CARGO_CHANGE) < ids.index(world.S2C_CARGO)
+    assert struct.unpack_from("<H", last(s, world.S2C_CARGO_CHANGE))[0] == 1
+    s.sent.clear()
+    call(role, s, world.C2S_WAREHOUSE_TO_BAG, transfer(11, 0, 4, count=9))
+    ids = [w.proto for w in s.sent]
+    assert ids.index(world.S2C_WAREHOUSE_TO_BAG) < ids.index(world.S2C_CARGO_CHANGE) < ids.index(world.S2C_CARGO)
+    assert c["bag"][0]["slot"] == 4
 
 
 @pytest.mark.parametrize("bad_target", [0, 32, 0x80, 0xc0, 0x500])

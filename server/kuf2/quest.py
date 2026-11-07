@@ -26,6 +26,9 @@ S2C_PROGRESS = 0x554c   # 0x140d7b7c0: u8 state, 5 * i16 count, i16, coded id
 C2S_TRACK = 0x554d      # coded id, obool keyed with the id (0x140f01bd0): HUD tracking on/off, no reply
 C2S_TUTORIAL_SKIP = 0x5550  # coded id (0x140f02320): the tutorial skip 0x140833160 sends one per tutorialquest row the
                         # player does not hold; no reply handler (planning/client/town_quest_npc.md 0x5550)
+C2S_FORCE_COMPLETE = 0x5551  # coded id (0x140f09c90): RTS.SetQuestForceComplete(id) of a shipped cutscene script
+                        # (ScriptRTS::Register 0x140b62c60, thunk 0x140b6af00), not a developer command
+S2C_FORCE_COMPLETE = 0x5552  # 0x140d7cd80: u16 n, n * 4 bytes into the quest manager's +0x40 list; `00 00` is safe
 C2S_AREA = 0x5558       # coded u32 (GameStateCommon+0x130), plain u32 area (0x140f026a0): the hero entered a quest area
                         # in a battle map (watcher 0x140d7f1d0, BattleField state only); resent 3 times until answered
 S2C_AREA = 0x5559       # 0x140d7d710: i16 result; 0 stops the resends
@@ -460,7 +463,7 @@ def send_progress(s, qid, q):
 
 # Request body sizes; a shorter body is logged and dropped (a handler exception would end the session).
 SIZE = {C2S_ACCEPT: 5, C2S_PROGRESS: 7, C2S_COMPLETE: 5, C2S_ABANDON: 4, C2S_TRACK: 5, C2S_AREA: 8,
-        C2S_TUTORIAL_SKIP: 4}
+        C2S_TUTORIAL_SKIP: 4, C2S_FORCE_COMPLETE: 4}
 
 
 def body(pkt):
@@ -603,6 +606,32 @@ def make(role, state):
         journal_quest("skip", qid)
         send_finished(s)
 
+    @role.on(C2S_FORCE_COMPLETE)
+    def force_complete(s, pkt):
+        """A cutscene script's RTS.SetQuestForceComplete(id) at its end (2_HexterOpening: 1002; the Accolade hero
+        scene: 1001): the marker quest of a questtable %SpotEvent row is finished. While the row's NextQuest is not
+        in the client's finished map, the world map sends the player into the row's opening room at every entry of
+        its spot (0x1406f8d70: Sunstruck 20100 -> room 880416 while quest 1010232 is ready), so the finished list
+        is resent. Only a marker quest: Use_Quest No and Complete1_Type JustCompleted (1001, 1002); the scripts
+        also name 1003, a real main quest, and 1006, which is in no table: ignored (the original's rule is in no
+        table; the silent builder's report, 2026-11-05). The reply is an empty list (0x5552: u16 n)."""
+        b = body(pkt)
+        if b is None:
+            return
+        qid = obf.dec_u32(b[:4])
+        s.send(Writer(S2C_FORCE_COMPLETE).u16(0))
+        r = record(s.data["char"])
+        quest = tables.by_id("questtable").get(str(qid))
+        if (quest is None or quest.get("Use_Quest") != "No" or quest.get("Complete1_Type") != "JustCompleted"
+                or str(qid) in r["active"] or qid in r["done"]):
+            log.info("force complete of %d: not a marker quest, held or finished; ignored", qid)
+            return
+        r["done"].append(qid)
+        state.save()
+        log.info("marker quest %d finished by its cutscene", qid)
+        journal_quest("force", qid)
+        send_finished(s)
+
 
 # questtable Collect_Reward_Finish (server-only: no reader in the client, the dump has no such string): what the hand-in
 # takes of each ItemGain condition's item. The tape shows collected quest items leave the bag at the hand-in (part 8
@@ -700,6 +729,8 @@ def hand_in(s, state, qid, reward=255):
         world.add_gold(s, state, gold, why=f"quest {qid}")
     if exp:
         world.add_exp(s, state, exp, why=f"quest {qid}")
+    from . import guild
+    guild.on_quest(s, state, quest)                 # the quest's Guild_Exp / Guild_Point / Guild_Contribution
     field_props(s, qid)
     spot_warp(s, state, qid, "Finish")
     from . import titles

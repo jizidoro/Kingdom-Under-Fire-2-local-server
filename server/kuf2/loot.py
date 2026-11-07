@@ -130,6 +130,7 @@ def roll_drops(spot, np_troop_id, leader_id=None, roll=None):
     """[(item, count)] the normal loot of an NP troop wiped in `spot`: each filled slot of its %Troop row, and of its
     leader's %Leader row, hits at Drop_Category<k>_Prob x the spot's scale (spot_scale) / PROB in PROB and then gives
     one pick of its category (roll_category)."""
+    from . import events                                 # a boost event that is on raises the drop chance
     roll = roll or random.randrange
     got = []
     for section, key in (("Troop", np_troop_id), ("Leader", leader_id)):
@@ -139,7 +140,7 @@ def roll_drops(spot, np_troop_id, leader_id=None, roll=None):
         scale = spot_scale(spot, row["Common_Drop"] == "True")
         for k in range(1, SLOTS + 1):
             cat, prob = _int(row[f"Drop_Category{k}"]), _int(row[f"Drop_Category{k}_Prob"])
-            if cat > 0 and prob > 0 and roll(PROB) < prob * scale // PROB:
+            if cat > 0 and prob > 0 and roll(PROB) < events.boosted("drop", prob * scale // PROB):
                 got += roll_category(cat, roll)
     return got
 

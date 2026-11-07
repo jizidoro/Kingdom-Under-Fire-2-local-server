@@ -19,7 +19,8 @@ action CurrentWarp; an access violation at 0x140d1c506 reading 0x50, inside the 
   warp 704 into the same field (13:30:06, its own spot: no flag) ran it at the 0x4049, 5 s before the room; in every
   other room of the run the hero bound while loading (from the start info) before its 0x50cb, in 10359 after it (built
   from the 0x50cb for an owner-0 Player, not the local one), and its 0x50b0 never carried a record (0 of 6).
-`client_flag` / `escape` below are those rules; the fix names the room's own spot (world.same_map_field). Reads the
+`client_flag` / `escape` / `current_at_leave` below are those rules; the fix names the client's current spot: the room's
+own, or the warp's when a 0x5641 went first (world.same_map_field; the 2026-11-05 warp 705 crash). Reads the
 installed game's tables and zone files. Run: py -m pytest -q server/tests"""
 import struct
 from types import SimpleNamespace
@@ -39,6 +40,7 @@ FIELDS = [10350, 10352, 10359, 10351, 10354, 10360]     # 1_MistField and 1_NewH
 # world_20261024_125927: the two leaves out of Mist Field's room 10350 that day (S2C 0x4049 bodies)
 LIVE_INTO_10359 = "000010c3c31010000001ea77120000bc00000000000000000372c3102c0100"   # 13:54:01.152697 -> the crash
 LIVE_WARP_704 = "000010c3c310100000d5bf33fb0000bc0000000000000000030cc3102c0100"     # 13:30:06.555166 -> fine
+LIVE_WARP_705 = "000010c3c310100000584dd9e700005800000000000000000372c3102c0100"     # 2026-11-05 07:39:03.487 -> the crash
 DONE_BEFORE_1150808 = [1150801, 1150802, 1150803, 1150811, 1150804, 1150805, 1150806, 1150807]   # proventen's save
 
 
@@ -59,6 +61,17 @@ def escape(room, flag, w):
     assert w.proto == world.S2C_MISSION_ESCAPE and len(b) == 2 + 0x1d and b[:2] == bytes(2)
     after = client_flag(room, obf.dec_u32(b[2 + 0x17:2 + 0x1b]), flag)
     return after == 0, after
+
+
+def current_at_leave(s, room):
+    """The client's current spot when the 0x4049 comes: a 0x5641 type 1 before it has made its warp's own spot current
+    with no flag (0x140cc0538 -> plain setter 0x140d65b00; traced live 2026-11-05 07:48:43.862)."""
+    for w in s.sent:
+        if w.proto == world.S2C_MISSION_ESCAPE:
+            break
+        if w.proto == world.S2C_WARP_PROCESS and bytes(w.buf)[0] == 1:
+            room = int(tables.by_id("warpinfo")[str(obf.dec_u32(bytes(w.buf)[1:5]))]["SpotID"])
+    return room
 
 
 def keeps_local_player(ended, flag):
@@ -111,10 +124,48 @@ def test_no_field_entry_from_a_room_keeps_the_battle(room):
         s = Session(room, room)
         world.send_field_entry(s, spot, 0, leave_battle=True)
         [esc] = escapes(s)
-        ended, flag = escape(room, 0, esc)
+        ended, flag = escape(current_at_leave(s, room), 0, esc)
         assert ended and flag == 0, (room, spot)
         s.run_later()
         assert game_server_spots(s) == [spot], (room, spot)
+
+
+def test_the_live_leave_by_warp_705_kept_the_battle():
+    # 2026-11-05 07:48:43-48 traced: 0x5641 made 10350 current, this 0x4049 named the room 10359 back: flag 1, the battle
+    # kept, the go's state change deleted the Players the 0x3f4f had made; the warp poll read the null local Player
+    # at 0x140b40a50, 650 ms after RenderStart
+    assert obf.dec_u32(bytes.fromhex(LIVE_WARP_705)[2 + 0x17:2 + 0x1b]) == 10359
+    assert escape(10350, 0, live(LIVE_WARP_705)) == (False, 1)
+    assert not keeps_local_player(False, 1)
+
+
+def test_quest_1150602s_warp_705_leaves_by_the_spot_its_0x5641_made_current():
+    s = Session(10359, 10359)
+    world.send_field_entry(s, 10350, 6, leave_battle=True)
+    assert [w.proto for w in s.sent][:2] == [world.S2C_WARP_PROCESS, world.S2C_MISSION_ESCAPE]
+    [esc] = escapes(s)
+    assert current_at_leave(s, 10359) == 10350
+    assert obf.dec_u32(bytes(esc.buf)[2 + 0x17:2 + 0x1b]) == 10350
+    ended, flag = escape(10350, 0, esc)
+    assert ended and flag == 0 and keeps_local_player(ended, flag)
+    s.run_later()
+    assert game_server_spots(s) == [10350]
+
+
+@pytest.mark.parametrize("room", ROUTE + [10351, 10354, 10360])
+def test_no_field_entry_by_a_warp_keeps_the_battle(room):
+    # the same for every start group that has a warp of its own (0x5641 goes first)
+    seen = 0
+    for spot in FIELDS:
+        for group in range(1, 12):
+            if world.field_warp(spot, group) is None:
+                continue
+            seen += 1
+            s = Session(room, room)
+            world.send_field_entry(s, spot, group, leave_battle=True)
+            [esc] = escapes(s)
+            assert escape(current_at_leave(s, room), 0, esc) == (True, 0), (room, spot, group)
+    assert seen
 
 
 def test_a_same_map_flag_left_set_would_keep_even_the_rooms_own_spot():
@@ -181,7 +232,7 @@ def test_a_windowless_win_back_onto_its_own_map_leaves_as_a_field_warp(spot, qid
     game.end_without_window(g, st, c, spot, 0, 100)
     assert not sent(g, game.S2C_MISSION_LEAVE)
     [esc] = [w for w in ws.sent if w.proto == world.S2C_MISSION_ESCAPE]
-    assert escape(spot, 0, esc) == (True, 0)
+    assert escape(current_at_leave(ws, spot), 0, esc) == (True, 0)
     while ws.pending:
         ws.pending.pop(0)[1]()
     assert [struct.unpack_from("<I", b, 8)[0] for b in sent(ws, world.S2C_GAME_SERVER)] == [back]

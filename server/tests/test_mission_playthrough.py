@@ -9,7 +9,7 @@ from test_battle import NoSave, mission_room, walk, pkt
 from test_director import obey
 from conftest import run_pending
 
-SPOTS = (10358, 10233, 10234, 10361, 10362, 10235, 10331, 10345, 10347, 10349, 10303)
+SPOTS = (10358, 10233, 10234, 10361, 10362, 10235, 10331, 10345, 10347, 10349, 10303, 10306)
 
 
 def windows(s):

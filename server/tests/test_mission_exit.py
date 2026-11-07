@@ -132,8 +132,10 @@ def escape(s, st):
 def ends_loaded(role, s, room):
     """Play the client's side after the exit until it stands in a room or a town; return ("field" | "town" |
     "worldmap", spot). A wait for a room that no 0x3f41 answers fails here: the 2026-10-09 15:00:08 black screen."""
+    from test_same_map_rooms import current_at_leave
     esc = [w for w in s.sent if w.proto == world.S2C_MISSION_ESCAPE]
     assert len(esc) == 1
+    room = current_at_leave(s, room)                    # a 0x5641 first makes its warp's spot current
     what, spot = client_after(room, esc[0])
     s.run_later()
     if what == "room":                                  # it waits for the world's 0x3f41, whatever room that names
@@ -175,10 +177,11 @@ def test_the_esc_exit_from_lunawing_returns_to_the_field_it_left():
 
 
 def test_the_reply_the_capture_got_is_one_the_client_waits_on():
-    # the oracle against the captured bytes themselves (15:00:08.226666): a same-map spot, so the client waits
+    # the oracle against the captured bytes themselves (15:00:08.226666; the last two the player id, then 1, now
+    # game.MY_SLOT): a same-map spot, so the client waits
     w = type("W", (), {})()
     w.proto, w.buf = world.S2C_MISSION_ESCAPE, bytes.fromhex(
-        "000010c3c310100001584dd9e70000580000000000000000000cc3102c0100")
+        "000010c3c310100001584dd9e70000580000000000000000000cc3102c0000")
     assert client_after(10361, w) == ("room", 10350)
     assert client_after(10350, w) == ("worldmap", 10350)        # 13:36:46, the same reply from field 10350: world map
 
@@ -390,3 +393,59 @@ def test_the_grey_fog_return_still_plays_the_village_chief_once():
     assert warps(s) == [30001] and scene(30001) and game_server_spots(s) == [10350]
     assert "mission_return" not in s.data["char"]
     assert warps(entered_by_login(10350, 0)) == []
+
+
+# --- the way back through a mission's door ---
+
+def test_grey_rock_ends_at_its_door_in_the_field_left():
+    # the tape 45:04: the hero stands at door 501 ("Greyrock Fortress Entrance"), the panel "Different Area" (not yet the
+    # EndSpot 10350), Glen 6010 beside him with the hand-in tick
+    c = {"spot": 10359, "pos": [264167, 0, 225961], "mission": {"spot": 10234, "quest": 1150601, "back": 10350}}
+    assert game.mission_way_back(c) == (10359, 0, (264167, 0, 225961))
+    assert c["spot"] == 10359 and c["pos"] == [264167, 0, 225961] and c["field_group"] == [10359, 0]
+    assert "mission" not in c and "mission_return" not in c
+
+
+def test_a_door_mission_entered_from_its_end_spot_ends_at_that_field_s_door():
+    c = {"spot": 10350, "mission": {"spot": 10234, "quest": 1150601, "back": 10350}}
+    assert game.mission_way_back(c) == (10350, 0, (264144, 0, 226017))
+
+
+def test_a_door_mission_whose_finisher_is_not_in_the_field_left_goes_to_its_end_spot():
+    # 1160113: door 502 stands in 10351 too, but Duran 6058 who takes it does not; going back there would strand the hero
+    c = {"spot": 10351, "mission": {"spot": 10235, "quest": 1160113, "back": 10354}}
+    assert game.mission_way_back(c)[0] == 10354
+
+
+def test_a_return_warp_wins_over_the_door():
+    # 1150406: door 500 stands in 10350, and warp 30002 takes the win to the refugee camp, group 2
+    c = {"spot": 10350, "mission": {"spot": 10233, "quest": 1150406, "back": 10350}}
+    back, group, _ = game.mission_way_back(c)
+    assert (back, group) == (10350, 2) and c["mission_return"]["warp"] == 30002
+
+
+def test_a_mission_with_no_quest_ends_where_it_did():
+    c = {"spot": 10359, "pos": [1, 0, 2], "mission": {"spot": 10234, "quest": None, "back": 10359}}
+    assert game.mission_way_back(c)[0] == 10359
+
+
+def test_the_field_sets_the_hero_at_the_door_once():
+    # the client starts at the group's point whatever 0x4041 said (live 07:27:52, hero at 279763, 189685): 0x50c0 moves him
+    c = {"spot": 10359, "mission": {"spot": 10234, "quest": 1150601, "back": 10350}}
+    game.mission_way_back(c)
+    s = Session(10359, 10359)
+    s.data.update(char=c, spot=10359)
+    game.arrive_at_door(s)
+    assert protos(s) == [game.S2C_TROOP_BACK] and s.data["hero_pos"] == (264167, 0, 225961)
+    assert "door_return" not in c
+    s.sent.clear()
+    game.arrive_at_door(s)
+    assert protos(s) == []
+
+
+def test_a_door_return_for_another_field_moves_nobody():
+    c = {"spot": 10359, "door_return": {"spot": 10350, "pos": [1, 0, 2]}}
+    s = Session(10359, 10359)
+    s.data.update(char=c, spot=10359)
+    game.arrive_at_door(s)
+    assert protos(s) == [] and "door_return" not in c

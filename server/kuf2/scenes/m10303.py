@@ -65,7 +65,10 @@ WAGONS = (31106, 31104, 31107)   # (5)도망포로1-3: the wagon-driving Ogres (
 BARRICADES = (10002, 10003)      # type 45 into the shortcut, with the transparent walls 10063 / 10064 behind them
 CLOCK_S, CLOCK = 240, 30300      # "Arrive later than the enemy" 00:04:00 (the tape 39:46, frames)
 
-HOLD = {23000}                   # the scouts (and the militia joined to them, game.mission_plan G4) come at (3)멈추시오
+HOLD = {23000, 10000}            # the scouts (and the militia joined to them, game.mission_plan G4) come at (3)멈추시오;
+                                 # the envoys at the scorpion's fall (the tape 35:09): at their marks from the start the
+                                 # client's AI casts on the scorpion, 6 000 away, 1 s in (live 2026-11-06). Force 10000's
+                                 # runner comes with the start step
 HOLD_PROPS = {10065, 10068}      # the pocket's red curtain and its north wall: only the story opens them (the hero's
                                  # approach would, 2 500 from the scouts' fight)
 HAND_LATER = {ICE, FIRE}         # the wizard the player picks with F
@@ -117,7 +120,7 @@ STEPS = [
     # Please be careful." (21013, the same frame to 34:42); a green pillar ahead 34:42-34:46 (the direction mark
     # (0)시작방향지시, its off switch (1)방향끄기 around it)
     {"on": "start", "id": "start", "do": [
-        ("say", GUIDE, 21011), ("panel start",), ("say", GUIDE, 21013), ("highlight", "(0)시작방향지시")]},
+        ("spawn", GUIDE), ("say", GUIDE, 21011), ("panel start",), ("say", GUIDE, 21013), ("highlight", "(0)시작방향지시")]},
     {"on": "bound", "bound": "(1)방향끄기", "do": [("highlight", "(0)시작방향지시", 0)]},
     # the orcs: "*Sniff, Sniff* Come on, look around!" (21030, 34:50) and "Who's there?!" (21040, 34:52-34:56), as the
     # hero comes up the mouth into (2)시작 (4 s after the pillar, at his speed its edge)
@@ -127,7 +130,7 @@ STEPS = [
     # running away! Set a blizzard on them!" (21050, 35:09; their blizzard on the orcs 35:12-35:16); the envoys and
     # the runner talk (21051-21055, 35:15-35:34) while the wizards come to their marks
     {"on": "down", "troop": SCORPION, "id": "scorpion", "do": [
-        ("say", ORC_2, 21041), ("march", 22000, "(2)오크도망"), ("march", 22001, "(2)오크도망"), ("say", ELF, 21050),
+        ("spawn", ELF, ICE, FIRE), ("say", ORC_2, 21041), ("march", 22000, "(2)오크도망"), ("march", 22001, "(2)오크도망"), ("say", ELF, 21050),
         ("march", "(0)영웅지원병엘프신관", "(2)마법사선택_나이틀린"), ("march", "(0)영웅지원병냉기", "(2)법사냉기도착"),
         ("march", "(0)영웅지원병화염", "(2)법사화염도착"), ("say", ELF, 21051), ("say", GUIDE, 21052), ("say", ELF, 21053),
         ("say", GUIDE, 21054), ("say", ELF, 21055)]},

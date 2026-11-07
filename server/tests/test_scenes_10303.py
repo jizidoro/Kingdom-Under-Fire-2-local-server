@@ -175,6 +175,47 @@ def test_f_at_the_ice_wizard_makes_it_the_players_and_the_envoys_leave():
     assert not f_up(s) and 21081 not in said(s) and mine(s) == [ICE]
 
 
+def test_a_blizzard_on_the_ground_counts_when_it_strikes_the_column():
+    # live 2026-11-06 01:57:22: the client casts Blizzard on a place, "troop 10201 casts 10246 on troop 65535", and only
+    # its executes name the troops it struck (24104, 24304): the step waited for a target the cast never has
+    s = room()
+    to_ambush(s)
+    x, z = centre("(4)본대만나기")
+    director.on_arrive(s, {24101: (x, 0, z)})
+    director.on_skill(s, ICE, 0xffff, 10246)
+    run_pending(s)
+    assert 21260 not in said(s)
+    combat.apply_ability(s, ICE, 10246, 1, [(24203, [0])], lambda *a: None, lambda *a: None)
+    run_pending(s)
+    assert said(s)[-2:] == [21260, 21261]
+
+
+def test_the_envoys_come_only_at_the_scorpions_fall():
+    # live 2026-11-06 01:40:14: placed at the zone's marks from the start, the Fire wizard's client AI threw Meteor on
+    # the Scorpion 1 s into the room, 6 000 away: down at 01:40:17, before the hero had taken a step (the tape: the hero
+    # kills it 35:04, the envoys come after it, 35:09)
+    s = room()
+    assert GUIDE in s.data["zone_troops"] and said(s)[0] == 21011
+    assert not {ELF, ICE, FIRE} & set(s.data["zone_troops"])
+    to_choice(s)
+    assert {ELF, ICE, FIRE} <= set(s.data["zone_troops"])
+
+
+def test_the_envoys_who_left_stay_gone_when_the_scouts_wake():
+    # live 2026-11-06 01:42:34: the scouts' wake is an enable-all, which brought the Fire wizard back (it had left at
+    # 01:42:24); telemetry had it enabled, its Meteor on the scouts every 12 s
+    s = room()
+    to_choice(s)
+    pick(s, "(2)법사냉기선택")
+    s.sent.clear()
+    walk(s, *centre("(3)멈추시오"))
+    run_pending(s)
+    sent = [struct.unpack_from(f"<{len(bytes(w.buf)) // 4}I", bytes(w.buf)) for w in s.sent
+            if w.proto == game.S2C_SCRIPT_ACTION and len(bytes(w.buf)) % 4 == 0]
+    at = max(i for i, a in enumerate(sent) if a[:3] == (game.ACT_ENABLE_ALL_TROOPS, 1, 1))
+    assert {a[2] for a in sent[at + 1:] if a[0] == game.ACT_ENABLE_TROOP and a[3] == 0} == {FIRE, ELF}
+
+
 def test_f_pressed_away_from_a_wizard_is_put_up_again_and_the_other_is_picked():
     s = room()
     to_choice(s)

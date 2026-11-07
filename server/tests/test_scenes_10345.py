@@ -1,5 +1,7 @@
 """Training Camp (Archer) 10345: the director's table (kuf2/scenes/m10345.py) in a mission room, against the original's
 run (playthrough part 4 25:20-30:04; the frames read in the table's docstring)."""
+import struct
+
 from kuf2 import combat, director, game
 from test_battle import NoSave, acts, mission_room
 from test_director import lines_shown, obey, press, prompts, run_pending, shown
@@ -7,6 +9,7 @@ from test_director import lines_shown, obey, press, prompts, run_pending, shown
 JAGER, ARCHER, MOCK = 10148, 10087, (10153, 10154, 10155)
 TARGET, MELEE, WING, WINGS = 10117, (10104, 10115, 10116), 10123, 10135
 ALLIES = (10118, 10119, 10120, 10121)
+CUTSCENE_ARCHER = 10113
 RIGHT = director.KEY_RIGHT_ORDER
 
 
@@ -15,7 +18,7 @@ def said(s):
 
 
 def handed(s):
-    return [a[2] for a in acts(s, game.ACT_CHANGE_FORCE)]
+    return [a[2] for a in acts(s, game.ACT_CHANGE_FORCE) if a[3] == game.MY_SLOT]
 
 
 def panel(s):
@@ -117,8 +120,7 @@ def test_the_enemy_infantry_charge_the_archer_and_the_move_away_is_the_players_o
     s.sent.clear()
     down(s, WING)
     assert said(s) == [20005, 12416, 12417, 12418, 12419]
-    marched = {a[2] for a in acts(s, director.ACT_MOVE_TO_AREA)}
-    assert marched == {TARGET, *MELEE}                            # all of F20009 standing, to the archer's start
+    assert [a[2] for a in acts(s, director.ACT_MOVE_STRAIGHT)] == [TARGET]    # one of the four, out of the melee (26:37)
     assert set(prompts(s).values()) >= set(RIGHT) and WINGS not in s.data["zone_troops"]
     press(s, RIGHT[0])
     run_pending(s)
@@ -149,12 +151,65 @@ def test_move_to_safety_joins_the_panel_as_jager_says_archers_can_stand_some_mel
     assert seq.index(12417) < seq.index(("panel", 30110)) < seq.index(12418)
 
 
+def test_the_one_that_charges_is_the_first_still_standing():
+    # live 2026-11-06 08:38: the player's archer had shot one of the four down before the line; whoever it was, one comes
+    s = mission_room(10345)
+    run_pending(s)
+    hit(s, TARGET, ARCHER)
+    run_pending(s)
+    down(s, TARGET, MELEE[0])
+    s.sent.clear()
+    down(s, WING)
+    # the straight walk: from the melee a plain one left him where he stood (live 2026-11-06 10:29:54, 10104 25 s later
+    # within 100 of his place, his AI on his fight), the one Ukuron took out of his in 10306 (live 09:15:53)
+    assert [a[2] for a in acts(s, director.ACT_MOVE_STRAIGHT)] == [MELEE[1]]
+    assert not acts(s, director.ACT_MOVE_TO_AREA)
+
+
+def test_the_cutscene_archer_never_takes_the_field():
+    # 10113 컷신용궁병 is the opening camera's archer, the one active troop of F10013; that camera is left out here and
+    # the tape has one archer on the field. Live 2026-11-06 08:12 it shot the highlighted troop and the Bomber Wing down.
+    s = mission_room(10345)
+    run_pending(s)
+    assert CUTSCENE_ARCHER not in s.data["zone_troops"] and CUTSCENE_ARCHER not in s.data["battle"].troops
+
+
+def test_the_lessons_allied_infantry_fight_for_show_and_the_players_archer_for_real():
+    # the tape's four red troops outlive the melee by minutes (25:38-28:12) and fall to the archer's volleys; ours fell
+    # to the allied infantry in 37 s (live 08:12:53-08:13:06, before the player's first order). The archer is of the same
+    # force, F10014, and is the player's.
+    s = mission_room(10345)
+    troops = s.data["battle"].troops
+    assert all(troops[u]["c"].get("harmless") for u in ALLIES)
+    assert not troops[ARCHER]["c"].get("harmless")
+    assert not troops[TARGET]["c"].get("harmless")                # their blows land: the tape's blue bars move
+
+
+def test_the_mock_battles_allied_infantry_hit_for_real():
+    # the same row 123690 in F12000: 14 enemy troops fall in 53 s on the tape (28:44-29:37), ours in 48 s
+    s = mission_room(10345)
+    to_the_mock_battle(s)
+    assert not any(s.data["battle"].troops[u]["c"].get("harmless") for u, t in s.data["zone_troops"].items()
+                   if t.get("ForceNum") == 12000)
+
+
+def test_the_lesson_archer_gives_its_hud_slot_back_before_it_leaves():
+    # the HUD has slots 1-3 for troops (OnAddPlayerTroop 0x14078c1b0 takes the first free one); a disabled troop keeps
+    # its own, so the three of the mock battle got 2, 3 and none (live 08:17:25: F2, F3, 10155 out of reach; the tape's
+    # HUD shows F1-F3). ChangeForce from the player's id clears it (0x140ba36e4 -> 0x140b3fca0).
+    s = mission_room(10345)
+    to_the_mock_battle(s)
+    sent = [struct.unpack_from("<4I", bytes(w.buf)) for w in s.sent if w.proto == game.S2C_SCRIPT_ACTION
+            and len(w.buf) >= 16]
+    assert sent.index((game.ACT_CHANGE_FORCE, 0, ARCHER, 10014)) < sent.index((game.ACT_ENABLE_TROOP, 0, ARCHER, 0))
+
+
 def test_the_mock_battle_swaps_the_lesson_archer_for_the_three_and_brings_jagers_army():
     # 28:12-28:44: every enemy of the lesson down; the HUD then shows F1-F3 13,700 hp each and no lesson archer
     s = mission_room(10345)
     to_the_mock_battle(s)
     troops = s.data["zone_troops"]
-    assert handed(s) == [ARCHER, *MOCK] and left(s) == [ARCHER] and s.data["plan"]["hand"][-3:] == MOCK
+    assert handed(s) == [ARCHER, *MOCK] and set(left(s)) == {ARCHER} and s.data["plan"]["hand"][-3:] == MOCK
     assert all(s.data["battle"].troops[u]["max"] == 13700 for u in MOCK)
     assert {30000, 30010, 30020, 12000} <= {t.get("ForceNum") for t in troops.values()}
     assert said(s)[-5:] == [20011, 20000, 20010, 20020, 20130]

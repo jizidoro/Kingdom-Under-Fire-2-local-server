@@ -471,7 +471,7 @@ def test_the_gift_box_opens_into_its_group_items(world_role):
     codes = sorted(i["code"] for i in s.data["char"]["bag"])
     assert codes == [350000010, 351100030, 605002205]                          # the box is gone
     role.handlers[world.C2S_OPEN_CONTAINER](s, pkt(world.C2S_OPEN_CONTAINER, LIVE_OPEN))    # no box left
-    assert bytes(s.sent[-1].buf) == struct.pack("<H", world.BAG_FULL)
+    assert bytes(s.sent[-1].buf) == struct.pack("<H", world.ITEM_LOCKED)
 
 
 def bag_req(proto, *parts):
@@ -573,13 +573,14 @@ def test_the_warehouse_keeps_items_and_gold(world_role):
     # 4 of the 10 potions into warehouse slot 2 (the builder's order: serial, target slot, target serial, count, slot)
     body = obf.u64(11) + obf.u16(2) + obf.u64(0) + obf.u16(4) + obf.u16(0)
     role.handlers[world.C2S_BAG_TO_WAREHOUSE](s, pkt(world.C2S_BAG_TO_WAREHOUSE, body))
-    assert [w.proto for w in s.sent[-3:]] == [world.S2C_BAG_TO_WAREHOUSE, world.S2C_WAREHOUSE_LIST, world.S2C_CARGO]
+    assert [w.proto for w in s.sent[-4:]] == [world.S2C_BAG_TO_WAREHOUSE, world.S2C_WAREHOUSE_LIST,
+                                              world.S2C_CARGO_CHANGE, world.S2C_CARGO]   # 0x1657: the open bag redraws
     kept = s.data["char"]["warehouse"]
     assert a["count"] == 6 and [(i["code"], i["slot"], i["count"]) for i in kept] == [(350000010, 2, 4)]
     # all of it back onto the bag stack
     back = obf.u64(kept[0]["serial"]) + obf.u16(0) + obf.u64(11) + obf.u16(4) + obf.u16(2)
     role.handlers[world.C2S_WAREHOUSE_TO_BAG](s, pkt(world.C2S_WAREHOUSE_TO_BAG, back))
-    assert bytes(s.sent[-3].buf) == bytes(2) and a["count"] == 10 and s.data["char"]["warehouse"] == []
+    assert bytes(s.sent[-4].buf) == bytes(2) and a["count"] == 10 and s.data["char"]["warehouse"] == []
     # a stale target serial is refused
     role.handlers[world.C2S_BAG_TO_WAREHOUSE](s, pkt(world.C2S_BAG_TO_WAREHOUSE, body))
     moved = s.data["char"]["warehouse"][0]
@@ -1057,6 +1058,35 @@ def test_skill_reset_costs_gold_and_level_up_refreshes_the_hero(world_role):
     assert len(bytes(core(s.sent)[-2].buf)) == world.HERO_BLOCK == 0xb5
 
 
+def test_a_level_from_a_quest_hand_in_reaches_the_field_room(world_role):
+    # 2026-11-05 08:44:05: 1160101's exp made the hero level 8 on the world connection, the room lives on the game
+    # connection: no 0x508a, no 0x5138, the HUD stayed at Lv.7 and 866 HP and the room's kit kept the old skills
+    from kuf2 import combat, game, skills, world
+    role, st = world_role
+    s, room = Session(), Session()
+    c = s.data["char"]
+    c.update(level=1, exp=0)
+    s.data["account"] = {"id": 7, "characters": [c]}
+    room.data.update(char=c, account=s.data["account"], kit={}, battle=combat.Battle())
+    room.data["battle"].add_hero(0, 100, c=game.hero_combatant(c))
+    st.game_sessions = {7: room}
+    world.add_exp(s, st, 10 ** 6)
+    protos = [w.proto for w in room.sent]
+    assert c["level"] > 1
+    assert game.S2C_LEVEL_UP in protos and combat.S2C_STATS in protos and skills.S2C_ROOM_SKILL in protos
+    assert room.data["kit"] and room.data["battle"].troops[0]["hp"] == room.data["battle"].troops[0]["max"] > 100
+
+
+def test_a_level_away_from_any_room_sends_no_room_packets(world_role):
+    from kuf2 import game, world
+    role, st = world_role
+    s = Session()
+    s.data["char"].update(level=1, exp=0)
+    st.game_sessions = {}
+    world.add_exp(s, st, 10 ** 6)
+    assert s.data["char"]["level"] > 1 and game.S2C_LEVEL_UP not in [w.proto for w in s.sent]
+
+
 def test_daily_tasks_roll_by_level_count_triggers_and_pay_out(world_role):
     from kuf2 import daily, quest, world
     role, st = world_role
@@ -1187,8 +1217,9 @@ def test_badges_on_and_off_and_tactics_level_up(world_role):
     assert c["gold"] == 5000 - troops.badge_price(badge)
     ability = int(tables.sections("tacticsacademy")["Basic"][0]["AbilityID"])
     role.handlers[troops.C2S_TACTICS_UP](s, pkt(troops.C2S_TACTICS_UP, obf.u32(ability)))    # 81001: held at 1 from
-    assert bytes(s.sent[-2].buf) == bytes(2) + obf.u32(ability) + bytes([2]) and c["tactics"][str(ability)]["level"] == 2
-    assert bytes(s.sent[-1].buf) == obf.u32(ability) + struct.pack("<IB", 0, 2)    # the start: to 2; then 0x10bd
+    assert bytes(s.sent[-3].buf) == bytes(2) + obf.u32(ability) + bytes([2]) and c["tactics"][str(ability)]["level"] == 2
+    assert bytes(s.sent[-2].buf) == obf.u32(ability) + struct.pack("<IB", 0, 2)    # the start: to 2; then 0x10bd
+    assert s.sent[-1].proto == world.S2C_GOLD                                       # the balance last
 
 
 
@@ -1368,6 +1399,20 @@ def test_in_room_doors_and_crystals_move_the_hero(world_role):
     role.handlers[world.C2S_WARP_REQUEST](s, pkt(world.C2S_WARP_REQUEST, warp_body(int(world_door["ID"]))))
     assert bytes(s.sent[-1].buf)[2 + 6] == world.ESCAPE_TO_WORLDMAP and s.data["on_worldmap"]
 
+
+
+def test_a_world_door_in_the_town_leaves_as_the_town_does(world_role):
+    """Accolade's World Map Portal, warp 22 (live 2026-11-06 01:30): the F box's answer came as 0x5640, not 0x1241, and
+    the 0x4049 it got is a battle-state packet: the client stood at the door with its move pending."""
+    role, st = world_role
+    s = Session()
+    c = s.data["char"]
+    c.update(spot=10001, pos=[15903, -81, 96931])
+    s.data["account"] = {"id": 1, "characters": [c]}
+    role.handlers[world.C2S_WARP_REQUEST](s, pkt(world.C2S_WARP_REQUEST, warp_body(22)))
+    sent = [w.proto for w in s.sent]
+    assert world.S2C_MISSION_ESCAPE not in sent and sent[-2:] == [world.S2C_LEAVE_TOWN, world.S2C_TO_WORLDMAP]
+    assert s.data["on_worldmap"] and c["spot"] == 10001 and c["pos"] == [15903, -81, 96931]
 
 
 def test_repeatable_quests_reopen_after_their_reset():

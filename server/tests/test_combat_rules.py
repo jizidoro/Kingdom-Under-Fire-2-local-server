@@ -122,6 +122,52 @@ def test_the_numbers_carry_the_words_over_units_and_over_the_hero(monkeypatch):
     assert flags == combat.FLAG_CRITICAL and dmg > 100
 
 
+def a_far_fight():
+    """Two zone troops at each other far from the hero: the crash site's guards and bandits (10169 / 10019, 34 000 units
+    from the camp, 2026-11-05 08:18)."""
+    s = room()
+    s.data["battle"].add_np(20001, 1000, 3, c=combat.combatant(6, 1, atk=(100, 100)))
+    s.data["battle"].add_np(20002, 1000, 3, c=combat.combatant(6, 1, atk=(100, 100)))
+    s.data["hero_pos"] = (70733, 0, 188453)
+    s.data["last_pos"] = {20001: (98905, 0, 168976), 20002: (99012, 0, 168826)}
+    return s
+
+
+def npc_hit(s):
+    return combat.apply_hits(s, [(20001, [0])], game.send_troop_hp, attacker=20002, attack={"type": "LOOSE"},
+                             record=combat.combatant(6, 1, atk=(100, 100)))
+
+
+def test_a_fight_out_of_the_heros_sight_draws_no_number_at_the_camp():
+    # the client's consumer (0x140c63760) keeps the 50 nearest records and draws each where its unit projects, however
+    # far: 172 and 186 floated around Glen with no fight in the camp
+    s = a_far_fight()
+    assert npc_hit(s) and not number_records(s)
+    assert sum(s.data["battle"].troops[20001]["units"]) < 3000                               # the hit itself landed
+
+
+def test_a_fight_near_the_hero_keeps_its_numbers():
+    s = a_far_fight()
+    s.data["last_pos"][20001] = (70733 + combat.NUMBERS_RANGE - 1, 0, 188453)
+    npc_hit(s)
+    assert number_records(s)
+
+
+def test_the_players_own_hit_shows_its_number_at_any_range():
+    s = a_far_fight()
+    combat.apply_hits(s, [(20001, [0])], game.send_troop_hp, attacker=0, attack={"type": "HERO", "pr": 1, "ar": 1},
+                      record=combat.combatant(6, 0, atk=(100, 100)))
+    assert number_records(s)
+
+
+@pytest.mark.parametrize("gone", ["hero_pos", "last_pos"])
+def test_a_place_not_reported_yet_keeps_the_number(gone):
+    s = a_far_fight()
+    del s.data[gone]
+    npc_hit(s)
+    assert number_records(s)
+
+
 # --- the guard (census D3, D4; decision A2) ------------------------------------------------------------------------
 
 @pytest.mark.parametrize("byte5,kind", [(0x00, 0), (0x04, 1), (0x08, 2), (0x0c, 3), (0x02, 4), (0x06, 5), (0x0a, 6),
