@@ -6,3 +6,5 @@ captures/
 re/
 server/data/
 tools/FileNames.list
+# built from your game install by tools/recon/cutscenes.py: the game's own scripts
+planning/scripts/cutscenes.*
